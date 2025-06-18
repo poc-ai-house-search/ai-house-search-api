@@ -1,88 +1,45 @@
-# models/schemas.py
-from pydantic import BaseModel, Field, validator
-from typing import List, Optional, Union
-from enum import Enum
+from pydantic import BaseModel, Field
+from typing import Optional
 
-class MessageRole(str, Enum):
-    USER = "user"
-    ASSISTANT = "assistant"
-
-class GenerationConfig(BaseModel):
-    max_output_tokens: Optional[int] = Field(default=2048, ge=1, le=8192)
-    temperature: Optional[float] = Field(default=0.7, ge=0.0, le=2.0)
-    top_p: Optional[float] = Field(default=0.8, ge=0.0, le=1.0)
-    top_k: Optional[int] = Field(default=40, ge=1, le=100)
-    stop_sequences: Optional[List[str]] = None
-
-class GenerateRequest(BaseModel):
-    message: str = Field(..., min_length=1, max_length=32000)
-    config: Optional[GenerationConfig] = None
-    system_instruction: Optional[str] = None
+class QueryRequest(BaseModel):
+    """クエリリクエストモデル"""
+    query: str = Field(..., min_length=1, description="URLまたは物件名")
+    enable_compression: Optional[bool] = Field(True, description="テキスト圧縮を有効にするか")
+    compression_ratio: Optional[float] = Field(0.6, ge=0.1, le=1.0, description="圧縮率（0.1-1.0）")
     
-    @validator('message')
-    def validate_message(cls, v):
-        if not v.strip():
-            raise ValueError('メッセージは空にできません')
-        return v.strip()
+    class Config:
+        schema_extra = {
+            "example": {
+                "query": "https://suumo.jp/chintai/jnc_000098936980/",
+                "enable_compression": True,
+                "compression_ratio": 0.6
+            }
+        }
 
-class ChatMessage(BaseModel):
-    role: MessageRole
-    content: str = Field(..., min_length=1)
+class AnalysisResponse(BaseModel):
+    """分析レスポンスモデル"""
+    query: str = Field(..., description="入力されたクエリ")
+    is_url: bool = Field(..., description="URLかどうか")
+    extracted_text: Optional[str] = Field(None, description="抽出されたテキスト（URLの場合のみ）")
+    original_text_length: Optional[int] = Field(None, description="元のテキスト文字数")
+    compressed_text_length: Optional[int] = Field(None, description="圧縮後のテキスト文字数")
+    compression_ratio_achieved: Optional[float] = Field(None, description="実際の圧縮率")
+    analysis: str = Field(..., description="AI分析結果")
     
-    @validator('content')
-    def validate_content(cls, v):
-        if not v.strip():
-            raise ValueError('コンテンツは空にできません')
-        return v.strip()
-
-class ChatRequest(BaseModel):
-    messages: List[ChatMessage] = Field(..., min_items=1)
-    config: Optional[GenerationConfig] = None
-    system_instruction: Optional[str] = None
-    
-    @validator('messages')
-    def validate_messages(cls, v):
-        if not v:
-            raise ValueError('メッセージは少なくとも1つ必要です')
-        
-        # 最後のメッセージはユーザーからのものである必要がある
-        if v[-1].role != MessageRole.USER:
-            raise ValueError('最後のメッセージはユーザーからのものである必要があります')
-        
-        return v
-
-class UsageMetadata(BaseModel):
-    prompt_token_count: int = 0
-    candidates_token_count: int = 0
-    total_token_count: int = 0
-
-class GenerateResponse(BaseModel):
-    success: bool
-    content: Optional[str] = None
-    error: Optional[str] = None
-    usage: Optional[UsageMetadata] = None
-    finish_reason: Optional[str] = None
+    class Config:
+        schema_extra = {
+            "example": {
+                "query": "https://example.com/property",
+                "is_url": True,
+                "extracted_text": "圧縮された物件情報のテキスト...",
+                "original_text_length": 15000,
+                "compressed_text_length": 9000,
+                "compression_ratio_achieved": 0.4,
+                "analysis": "この物件は..."
+            }
+        }
 
 class HealthResponse(BaseModel):
-    status: str
-    version: str
-    timestamp: str
-    google_cloud_project: str
-
-class ErrorResponse(BaseModel):
-    detail: str
-    error_code: Optional[str] = None
-    timestamp: str
-
-class ImageAnalyzeRequest(BaseModel):
-    image_data: str = Field(..., description="Base64エンコードされた画像データ")
-    prompt: str = Field(default="この画像について説明してください", max_length=1000)
-    mime_type: str = Field(default="image/jpeg", pattern=r"^image/(jpeg|png|gif|webp)$")
-    config: Optional[GenerationConfig] = None
-
-class FileUploadResponse(BaseModel):
-    success: bool
-    file_uri: Optional[str] = None
-    file_size: Optional[int] = None
-    mime_type: Optional[str] = None
-    error: Optional[str] = None
+    """ヘルスチェックレスポンスモデル"""
+    status: str = Field(..., description="ステータス")
+    message: str = Field(..., description="メッセージ")
