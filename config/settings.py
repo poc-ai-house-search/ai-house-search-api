@@ -1,5 +1,5 @@
 import os
-from typing import Optional
+from typing import Optional, List
 
 class Settings:
     """アプリケーション設定"""
@@ -20,6 +20,12 @@ class Settings:
     DEFAULT_COMPRESSION_RATIO: float = 0.6  # 40%削減目標
     ENABLE_COMPRESSION: bool = True
     MIN_TEXT_LENGTH_FOR_COMPRESSION: int = 5000  # 5000文字以上で圧縮実行
+    
+    # CORS設定
+    CORS_ORIGINS: List[str] = os.getenv("CORS_ORIGINS", "*").split(",")
+    CORS_CREDENTIALS: bool = True
+    CORS_METHODS: List[str] = ["*"]
+    CORS_HEADERS: List[str] = ["*"]
     
     # ログ設定
     LOG_LEVEL: str = "INFO"

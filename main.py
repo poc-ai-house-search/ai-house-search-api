@@ -1,12 +1,12 @@
 from fastapi import FastAPI, HTTPException
-from models.schemas import QueryRequest, AnalysisResponse, HealthResponse
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel, Field
 from services.scraping_service import ScrapingService
 from services.gemini_service import GeminiService
 from config.settings import settings
 import logging
 from contextlib import asynccontextmanager
-from pydantic import BaseModel
-from typing import Dict, Any
+from typing import Optional, Dict, Any, Union
 
 # ログ設定
 logging.basicConfig(level=getattr(logging, settings.LOG_LEVEL))
@@ -46,6 +46,15 @@ app = FastAPI(
     title=settings.APP_NAME,
     version=settings.APP_VERSION,
     lifespan=lifespan
+)
+
+# CORS設定
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=settings.CORS_ORIGINS,
+    allow_credentials=settings.CORS_CREDENTIALS,
+    allow_methods=settings.CORS_METHODS,
+    allow_headers=settings.CORS_HEADERS,
 )
 
 @app.get(f"{settings.API_PREFIX}/")
