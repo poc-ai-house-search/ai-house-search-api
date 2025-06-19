@@ -1,10 +1,13 @@
+# main.py（インポート修正版）
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
+from models.schemas import QueryRequest, AnalysisResponse, HealthResponse 
 from services.scraping_service import ScrapingService
 from services.gemini_service import GeminiService
 from config.settings import settings
 import logging
+import os
 from contextlib import asynccontextmanager
 from typing import Optional, Dict, Any, Union
 
@@ -29,6 +32,7 @@ async def lifespan(app: FastAPI):
     
     # 起動時
     try:
+        logger.info("サービス初期化開始")
         settings.validate()
         scraping_service = ScrapingService()
         gemini_service = GeminiService()
@@ -229,7 +233,8 @@ async def test_compression_levels(text: str):
         logger.error(f"圧縮テストエラー: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-if __name__ == "__main__":
-    import uvicorn
-    port = int(os.getenv("PORT", 8080))
-    uvicorn.run(app, host="0.0.0.0", port=port)
+
+# if __name__ == "__main__":
+#     import uvicorn
+#     port = int(os.getenv("PORT", 8080))
+#     uvicorn.run(app, host="0.0.0.0", port=port)
