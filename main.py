@@ -1,8 +1,8 @@
-# main.py（インポート修正版）
+# main.py（Dockerfile CMD対応版）
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
-from models.schemas import QueryRequest, AnalysisResponse, HealthResponse 
+from models.schemas import QueryRequest, AnalysisResponse, HealthResponse
 from services.scraping_service import ScrapingService
 from services.gemini_service import GeminiService
 from config.settings import settings
@@ -113,11 +113,16 @@ async def analyze_property(request: QueryRequest):
                 compressed_length = len(extracted_text)
                 compression_achieved = 1 - (compressed_length / original_length) if original_length > 0 else 0
             
-            analysis = gemini_service.analyze_property_from_url(extracted_text)
+            analysis = gemini_service.analyze_property_from_url(extracted_text, request.response_format)
         else:
             logger.info(f"物件名分析開始: {query}")
             # 物件名の場合：直接Gemini分析
-            analysis = gemini_service.analyze_property_by_name(query)
+            analysis = gemini_service.analyze_property_by_name(query, request.response_format)
+        
+        # レスポンス形式に応じた処理
+        raw_analysis = None
+        if request.response_format == "text" and "raw_response" in analysis:
+            raw_analysis = analysis.get("raw_response")
         
         return AnalysisResponse(
             query=query,
@@ -126,7 +131,9 @@ async def analyze_property(request: QueryRequest):
             original_text_length=original_length,
             compressed_text_length=compressed_length,
             compression_ratio_achieved=compression_achieved,
-            analysis=analysis
+            analysis=analysis,
+            raw_analysis=raw_analysis,
+            response_format=request.response_format
         )
         
     except HTTPException:
@@ -170,6 +177,79 @@ async def compress_text_only(request: TextCompressionRequest) -> Dict[str, Any]:
         
     except Exception as e:
         logger.error(f"テキスト圧縮エラー: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get(f"{settings.API_PREFIX}/gemini-models")
+async def list_gemini_models():
+    """利用可能なGeminiモデルを一覧表示"""
+    try:
+        import google.generativeai as genai
+        genai.configure(api_key=settings.GOOGLE_API_KEY)
+        
+        models = genai.list_models()
+        model_info = []
+        
+        for model in models:
+            model_info.append({
+                "name": model.name,
+                "display_name": model.display_name,
+                "description": model.description,
+                "supported_methods": model.supported_generation_methods,
+                "input_token_limit": getattr(model, 'input_token_limit', 'N/A'),
+                "output_token_limit": getattr(model, 'output_token_limit', 'N/A')
+            })
+        
+        # generateContentをサポートするモデルのみフィルタ
+        compatible_models = [
+            model for model in model_info 
+            if 'generateContent' in model.get('supported_methods', [])
+        ]
+        
+        return {
+            "total_models": len(model_info),
+            "compatible_models_count": len(compatible_models),
+            "compatible_models": compatible_models,
+            "all_models": model_info
+        }
+        
+    except Exception as e:
+        logger.error(f"Geminiモデル一覧取得エラー: {e}")
+        raise HTTPException(status_code=500, detail=f"モデル一覧の取得に失敗: {str(e)}")
+
+@app.post(f"{settings.API_PREFIX}/test-json-parsing")
+async def test_json_parsing():
+    """JSON解析のテスト"""
+    sample_text = """
+    ## 三田ガーデンヒルズ イーストヒル 1310号室 物件分析
+
+    **1. 物件の基本情報**
+    * **物件名:** 三田ガーデンヒルズ イーストヒル
+    * **住所:** 東京都港区三田１丁目
+    * **部屋番号:** 1310号室
+    * **価格:** 賃料 90万円、敷金 180万円、礼金 90万円
+    * **面積:** 専有面積 72.51㎡
+    * **間取り:** 2LDK
+    * **築年数:** 2025年3月築（新築）
+    """
+    
+    try:
+        from services.gemini_service import GeminiService
+        gemini_svc = GeminiService()
+        
+        # JSON形式でテスト
+        json_result = gemini_svc.analyze_property_from_url(sample_text, "json")
+        
+        # TEXT形式でテスト
+        text_result = gemini_svc.analyze_property_from_url(sample_text, "text")
+        
+        return {
+            "json_analysis": json_result,
+            "text_analysis": text_result,
+            "message": "JSON解析テスト完了"
+        }
+        
+    except Exception as e:
+        logger.error(f"JSON解析テストエラー: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get(f"{settings.API_PREFIX}/stats")
@@ -233,8 +313,8 @@ async def test_compression_levels(text: str):
         logger.error(f"圧縮テストエラー: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-
-# if __name__ == "__main__":
-#     import uvicorn
-#     port = int(os.getenv("PORT", 8080))
-#     uvicorn.run(app, host="0.0.0.0", port=port)
+# Dockerfileで起動する場合、この部分は削除
+if __name__ == "__main__":
+    import uvicorn
+    port = int(os.getenv("PORT", 8080))
+    uvicorn.run(app, host="0.0.0.0", port=port)
