@@ -1,3 +1,4 @@
+# config/settings.py (GCS対応版)
 import os
 from typing import Optional, List
 
@@ -11,6 +12,13 @@ class Settings:
     
     # Google API設定
     GOOGLE_API_KEY: Optional[str] = os.getenv("GOOGLE_API_KEY")
+    
+    # GCS設定
+    GCP_PROJECT_ID: Optional[str] = os.getenv("GCP_PROJECT_ID")
+    GCS_BUCKET_NAME: Optional[str] = os.getenv("GCS_BUCKET_NAME", "property-analysis-storage")
+    GCS_CREDENTIALS_PATH: Optional[str] = os.getenv("GCS_CREDENTIALS_PATH")  # サービスアカウントキーファイルのパス
+    GCS_CREDENTIALS_JSON: Optional[str] = os.getenv("GCS_CREDENTIALS_JSON")  # JSON文字列として設定
+    ENABLE_GCS_STORAGE: bool = os.getenv("ENABLE_GCS_STORAGE", "true").lower() == "true"
     
     # スクレイピング設定
     REQUEST_TIMEOUT: int = 30
@@ -34,5 +42,11 @@ class Settings:
         """設定値の検証"""
         if not self.GOOGLE_API_KEY:
             raise ValueError("GOOGLE_API_KEY environment variable is required")
+        
+        if self.ENABLE_GCS_STORAGE:
+            if not self.GCP_PROJECT_ID:
+                raise ValueError("GCP_PROJECT_ID environment variable is required when GCS storage is enabled")
+            if not self.GCS_BUCKET_NAME:
+                raise ValueError("GCS_BUCKET_NAME environment variable is required when GCS storage is enabled")
 
 settings = Settings()

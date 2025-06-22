@@ -67,6 +67,7 @@ class AnalysisResponse(BaseModel):
     model_config = ConfigDict(
         json_schema_extra={
             "example": {
+                "uuid": "550e8400-e29b-41d4-a716-446655440000",
                 "query": "https://example.com/property",
                 "is_url": True,
                 "extracted_text": "圧縮された物件情報のテキスト...",
@@ -83,11 +84,17 @@ class AnalysisResponse(BaseModel):
                         "summary": "この物件は..."
                     }
                 },
-                "response_format": "json"
+                "response_format": "json",
+                "storage_info": {
+                    "gcs_enabled": True,
+                    "saved_to_gcs": True,
+                    "gcs_path": "550e8400-e29b-41d4-a716-446655440000/"
+                }
             }
         }
     )
     
+    uuid: str = Field(..., description="分析セッションのUUID")
     query: str = Field(..., description="入力されたクエリ")
     is_url: bool = Field(..., description="URLかどうか")
     extracted_text: Optional[str] = Field(None, description="抽出されたテキスト（URLの場合のみ）")
@@ -97,6 +104,7 @@ class AnalysisResponse(BaseModel):
     analysis: Dict[str, Any] = Field(..., description="AI分析結果")
     raw_analysis: Optional[str] = Field(None, description="生の分析テキスト")
     response_format: str = Field("json", description="レスポンス形式")
+    storage_info: Optional[Dict[str, Any]] = Field(None, description="ストレージ情報")
 
 class HealthResponse(BaseModel):
     """ヘルスチェックレスポンスモデル"""

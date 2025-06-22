@@ -1,13 +1,15 @@
-# main.py（Dockerfile CMD対応版）
+# main.py（UUID&GCS対応版）
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from models.schemas import QueryRequest, AnalysisResponse, HealthResponse
 from services.scraping_service import ScrapingService
 from services.gemini_service import GeminiService
+from services.gcs_service import GCSService
 from config.settings import settings
 import logging
 import os
+import uuid
 from contextlib import asynccontextmanager
 from typing import Optional, Dict, Any, Union
 
@@ -18,6 +20,7 @@ logger = logging.getLogger(__name__)
 # サービスインスタンスをグローバル変数として定義
 scraping_service = None
 gemini_service = None
+gcs_service = None
 
 class TextCompressionRequest(BaseModel):
     """テキスト圧縮リクエストモデル"""
@@ -28,7 +31,7 @@ class TextCompressionRequest(BaseModel):
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """アプリケーションのライフサイクル管理"""
-    global scraping_service, gemini_service
+    global scraping_service, gemini_service, gcs_service
     
     # 起動時
     try:
@@ -36,6 +39,19 @@ async def lifespan(app: FastAPI):
         settings.validate()
         scraping_service = ScrapingService()
         gemini_service = GeminiService()
+        
+        # GCS サービスの初期化（オプション）
+        if settings.ENABLE_GCS_STORAGE:
+            try:
+                gcs_service = GCSService()
+                logger.info("GCS サービス初期化完了")
+            except Exception as e:
+                logger.warning(f"GCS サービス初期化に失敗（無効化されます）: {e}")
+                gcs_service = None
+        else:
+            logger.info("GCS ストレージは無効化されています")
+            gcs_service = None
+            
         logger.info("サービス初期化完了")
         yield
     except Exception as e:
@@ -76,12 +92,39 @@ async def health_check():
 
 @app.post(f"{settings.API_PREFIX}/analyze", response_model=AnalysisResponse)
 async def analyze_property(request: QueryRequest):
-    """物件分析エンドポイント（テキスト圧縮機能付き）"""
+    """物件分析エンドポイント（UUID&GCS保存機能付き）"""
+    # UUIDを生成
+    analysis_uuid = str(uuid.uuid4())
+    
     try:
         query = request.query.strip()
         
         if not query:
             raise HTTPException(status_code=400, detail="クエリが空です")
+        
+        logger.info(f"分析開始: {query} (UUID: {analysis_uuid})")
+        
+        # GCSにフォルダ作成
+        gcs_folder_created = False
+        if gcs_service:
+            try:
+                gcs_folder_created = gcs_service.create_folder(analysis_uuid)
+                logger.info(f"GCSフォルダ作成: {analysis_uuid}")
+            except Exception as e:
+                logger.warning(f"GCSフォルダ作成に失敗: {e}")
+        
+        # リクエスト情報をGCSに保存
+        if gcs_service and gcs_folder_created:
+            try:
+                request_data = {
+                    "query": query,
+                    "enable_compression": request.enable_compression,
+                    "compression_ratio": request.compression_ratio,
+                    "response_format": request.response_format
+                }
+                gcs_service.save_request_info(analysis_uuid, request_data)
+            except Exception as e:
+                logger.warning(f"リクエスト情報のGCS保存に失敗: {e}")
         
         is_query_url = scraping_service.is_url(query)
         extracted_text = None
@@ -113,6 +156,13 @@ async def analyze_property(request: QueryRequest):
                 compressed_length = len(extracted_text)
                 compression_achieved = 1 - (compressed_length / original_length) if original_length > 0 else 0
             
+            # 抽出されたテキストをGCSに保存
+            if gcs_service and gcs_folder_created and extracted_text:
+                try:
+                    gcs_service.save_extracted_text(analysis_uuid, extracted_text)
+                except Exception as e:
+                    logger.warning(f"抽出テキストのGCS保存に失敗: {e}")
+            
             analysis = gemini_service.analyze_property_from_url(extracted_text, request.response_format)
         else:
             logger.info(f"物件名分析開始: {query}")
@@ -124,7 +174,9 @@ async def analyze_property(request: QueryRequest):
         if request.response_format == "text" and "raw_response" in analysis:
             raw_analysis = analysis.get("raw_response")
         
-        return AnalysisResponse(
+        # レスポンスオブジェクトを作成
+        response_data = AnalysisResponse(
+            uuid=analysis_uuid,
             query=query,
             is_url=is_query_url,
             extracted_text=extracted_text,
@@ -133,13 +185,31 @@ async def analyze_property(request: QueryRequest):
             compression_ratio_achieved=compression_achieved,
             analysis=analysis,
             raw_analysis=raw_analysis,
-            response_format=request.response_format
+            response_format=request.response_format,
+            storage_info={
+                "gcs_enabled": settings.ENABLE_GCS_STORAGE,
+                "saved_to_gcs": False,
+                "gcs_path": f"{analysis_uuid}/" if gcs_service else None
+            }
         )
+        
+        # 分析結果をGCSに保存
+        if gcs_service and gcs_folder_created:
+            try:
+                save_success = gcs_service.save_analysis_result(analysis_uuid, response_data.model_dump())
+                if save_success:
+                    response_data.storage_info["saved_to_gcs"] = True
+                    logger.info(f"分析結果をGCSに保存完了: {analysis_uuid}")
+            except Exception as e:
+                logger.warning(f"分析結果のGCS保存に失敗: {e}")
+        
+        return response_data
         
     except HTTPException:
         raise
     except Exception as e:
         logger.error(f"分析エラー: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post(f"{settings.API_PREFIX}/compress-text")
@@ -177,6 +247,80 @@ async def compress_text_only(request: TextCompressionRequest) -> Dict[str, Any]:
         
     except Exception as e:
         logger.error(f"テキスト圧縮エラー: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get(f"{settings.API_PREFIX}/storage/sessions")
+async def list_analysis_sessions(limit: int = 100):
+    """保存された分析セッション一覧を取得"""
+    try:
+        if not gcs_service:
+            raise HTTPException(status_code=503, detail="GCSストレージが利用できません")
+        
+        sessions = gcs_service.list_analysis_sessions(limit)
+        return {
+            "sessions": sessions,
+            "total_count": len(sessions),
+            "limit": limit
+        }
+        
+    except Exception as e:
+        logger.error(f"セッション一覧取得エラー: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get(f"{settings.API_PREFIX}/storage/session/{{session_uuid}}")
+async def get_analysis_session(session_uuid: str):
+    """特定の分析セッションを取得"""
+    try:
+        if not gcs_service:
+            raise HTTPException(status_code=503, detail="GCSストレージが利用できません")
+        
+        session_data = gcs_service.get_analysis_result(session_uuid)
+        if not session_data:
+            raise HTTPException(status_code=404, detail="セッションが見つかりません")
+        
+        return session_data
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"セッション取得エラー: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.delete(f"{settings.API_PREFIX}/storage/session/{{session_uuid}}")
+async def delete_analysis_session(session_uuid: str):
+    """分析セッションを削除"""
+    try:
+        if not gcs_service:
+            raise HTTPException(status_code=503, detail="GCSストレージが利用できません")
+        
+        success = gcs_service.delete_analysis_session(session_uuid)
+        if not success:
+            raise HTTPException(status_code=500, detail="セッションの削除に失敗しました")
+        
+        return {"message": f"セッション {session_uuid} を削除しました"}
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"セッション削除エラー: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get(f"{settings.API_PREFIX}/storage/stats")
+async def get_storage_stats():
+    """ストレージ統計情報を取得"""
+    try:
+        if not gcs_service:
+            return {
+                "gcs_enabled": False,
+                "message": "GCSストレージは無効化されています"
+            }
+        
+        stats = gcs_service.get_storage_stats()
+        stats["gcs_enabled"] = True
+        return stats
+        
+    except Exception as e:
+        logger.error(f"ストレージ統計取得エラー: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get(f"{settings.API_PREFIX}/gemini-models")
