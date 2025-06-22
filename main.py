@@ -249,22 +249,234 @@ async def compress_text_only(request: TextCompressionRequest) -> Dict[str, Any]:
         logger.error(f"テキスト圧縮エラー: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.get(f"{settings.API_PREFIX}/storage/debug")
+async def debug_gcs_storage():
+    """GCS ストレージの詳細情報をデバッグ用に取得"""
+    try:
+        if not gcs_service:
+            return {"error": "GCS サービスが利用できません"}
+        
+        # 基本的なバケット情報
+        bucket_info = {
+            "bucket_name": gcs_service.bucket_name,
+            "bucket_exists": gcs_service.bucket.exists()
+        }
+        
+        # 全ブロブのリスト（先頭50件）
+        all_blobs = list(gcs_service.client.list_blobs(gcs_service.bucket_name, max_results=50))
+        blobs_info = []
+        for blob in all_blobs:
+            blobs_info.append({
+                "name": blob.name,
+                "size": blob.size,
+                "created": blob.time_created.isoformat() if blob.time_created else None
+            })
+        
+        # delimiterを使用してプレフィックス取得を試す
+        delimiter_blobs = gcs_service.client.list_blobs(
+            gcs_service.bucket_name, 
+            delimiter='/',
+            max_results=50
+        )
+        
+        prefixes_found = []
+        pages_info = []
+        
+        for page_num, page in enumerate(delimiter_blobs.pages):
+            page_info = {
+                "page_number": page_num,
+                "prefixes": list(page.prefixes) if hasattr(page, 'prefixes') else [],
+                "items_count": len(list(page))
+            }
+            pages_info.append(page_info)
+            
+            if hasattr(page, 'prefixes') and page.prefixes:
+                prefixes_found.extend(page.prefixes)
+                
+            # 最初のページだけで止める（デバッグ用）
+            if page_num >= 2:
+                break
+        
+        return {
+            "gcs_service_status": "OK",
+            "bucket_info": bucket_info,
+            "total_blobs_found": len(blobs_info),
+            "all_blobs": blobs_info,
+            "delimiter_analysis": {
+                "prefixes_found": prefixes_found,
+                "prefixes_count": len(prefixes_found),
+                "pages_analyzed": len(pages_info),
+                "pages_info": pages_info
+            }
+        }
+        
+    except Exception as e:
+        logger.error(f"GCS デバッグエラー: {e}")
+        return {"error": str(e)}
+
 @app.get(f"{settings.API_PREFIX}/storage/sessions")
-async def list_analysis_sessions(limit: int = 100):
-    """保存された分析セッション一覧を取得"""
+async def list_analysis_sessions(
+    limit: int = 100,
+    is_url: Optional[bool] = None,
+    query_contains: Optional[str] = None,
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None
+):
+    """保存された分析セッション一覧を取得（フィルタリング機能付き）"""
     try:
         if not gcs_service:
             raise HTTPException(status_code=503, detail="GCSストレージが利用できません")
         
         sessions = gcs_service.list_analysis_sessions(limit)
+        
+        # フィルタリング
+        filtered_sessions = sessions
+        
+        if is_url is not None:
+            filtered_sessions = [s for s in filtered_sessions if s.get('is_url') == is_url]
+        
+        if query_contains:
+            filtered_sessions = [
+                s for s in filtered_sessions 
+                if query_contains.lower() in str(s.get('query', '')).lower()
+            ]
+        
+        if start_date:
+            filtered_sessions = [
+                s for s in filtered_sessions 
+                if s.get('timestamp', '') >= start_date
+            ]
+        
+        if end_date:
+            filtered_sessions = [
+                s for s in filtered_sessions 
+                if s.get('timestamp', '') <= end_date
+            ]
+        
         return {
-            "sessions": sessions,
-            "total_count": len(sessions),
-            "limit": limit
+            "sessions": filtered_sessions,
+            "total_count": len(filtered_sessions),
+            "original_count": len(sessions),
+            "limit": limit,
+            "filters": {
+                "is_url": is_url,
+                "query_contains": query_contains,
+                "start_date": start_date,
+                "end_date": end_date
+            }
         }
         
     except Exception as e:
         logger.error(f"セッション一覧取得エラー: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get(f"{settings.API_PREFIX}/storage/search")
+async def search_analysis_sessions(
+    q: str,
+    limit: int = 50
+):
+    """分析セッションをクエリで検索"""
+    try:
+        if not gcs_service:
+            raise HTTPException(status_code=503, detail="GCSストレージが利用できません")
+        
+        sessions = gcs_service.list_analysis_sessions(limit * 2)  # 余裕を持って取得
+        
+        # 検索クエリに基づくフィルタリング
+        search_results = []
+        for session in sessions:
+            query_text = str(session.get('query', '')).lower()
+            uuid_text = str(session.get('uuid', '')).lower()
+            
+            if (q.lower() in query_text or 
+                q.lower() in uuid_text):
+                search_results.append(session)
+                
+            if len(search_results) >= limit:
+                break
+        
+        return {
+            "search_query": q,
+            "results": search_results,
+            "result_count": len(search_results),
+            "limit": limit
+        }
+        
+    except Exception as e:
+        logger.error(f"セッション検索エラー: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get(f"{settings.API_PREFIX}/storage/session/{{session_uuid}}/files")
+async def get_session_files(session_uuid: str):
+    """特定セッションの保存ファイル一覧を取得"""
+    try:
+        if not gcs_service:
+            raise HTTPException(status_code=503, detail="GCSストレージが利用できません")
+        
+        # GCSからファイル一覧を取得
+        blobs = gcs_service.client.list_blobs(
+            gcs_service.bucket_name, 
+            prefix=f"{session_uuid}/"
+        )
+        
+        files = []
+        for blob in blobs:
+            if blob.name != f"{session_uuid}/":  # フォルダ自体は除外
+                files.append({
+                    "name": blob.name.split('/')[-1],
+                    "full_path": blob.name,
+                    "size": blob.size,
+                    "content_type": blob.content_type,
+                    "created": blob.time_created.isoformat() if blob.time_created else None,
+                    "updated": blob.updated.isoformat() if blob.updated else None
+                })
+        
+        return {
+            "session_uuid": session_uuid,
+            "files": files,
+            "file_count": len(files)
+        }
+        
+    except Exception as e:
+        logger.error(f"セッションファイル取得エラー: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get(f"{settings.API_PREFIX}/storage/session/{{session_uuid}}/download/{{file_name}}")
+async def download_session_file(session_uuid: str, file_name: str):
+    """特定セッションのファイルをダウンロード"""
+    try:
+        if not gcs_service:
+            raise HTTPException(status_code=503, detail="GCSストレージが利用できません")
+        
+        file_path = f"{session_uuid}/{file_name}"
+        blob = gcs_service.bucket.blob(file_path)
+        
+        if not blob.exists():
+            raise HTTPException(status_code=404, detail="ファイルが見つかりません")
+        
+        content = blob.download_as_text()
+        
+        # ファイル形式に応じてレスポンス
+        if file_name.endswith('.json'):
+            return json.loads(content)
+        else:
+            return {
+                "file_name": file_name,
+                "content": content,
+                "content_type": blob.content_type
+            }
+        
+    except json.JSONDecodeError:
+        # JSONパースエラーの場合は生のコンテンツを返す
+        return {
+            "file_name": file_name,
+            "content": content,
+            "content_type": "text/plain"
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"ファイルダウンロードエラー: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get(f"{settings.API_PREFIX}/storage/session/{{session_uuid}}")
@@ -458,7 +670,7 @@ async def test_compression_levels(text: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 # Dockerfileで起動する場合、この部分は削除
-if __name__ == "__main__":
-    import uvicorn
-    port = int(os.getenv("PORT", 8080))
-    uvicorn.run(app, host="0.0.0.0", port=port)
+# if __name__ == "__main__":
+#     import uvicorn
+#     port = int(os.getenv("PORT", 8080))
+#     uvicorn.run(app, host="0.0.0.0", port=port)

@@ -153,16 +153,32 @@ class GCSService:
         """分析セッション一覧を取得"""
         try:
             sessions = []
+            
+            # delimiterを使用してフォルダ（プレフィックス）のリストを取得
             blobs = self.client.list_blobs(
                 self.bucket_name, 
                 delimiter='/',
                 max_results=limit
             )
             
-            # フォルダ（プレフィックス）のリストを取得
-            for prefix in blobs.prefixes:
+            # プレフィックス（フォルダ）を取得するためには、pagesを反復する必要がある
+            prefixes = []
+            for page in blobs.pages:
+                if hasattr(page, 'prefixes') and page.prefixes:
+                    prefixes.extend(page.prefixes)
+                # limitに達したら終了
+                if len(prefixes) >= limit:
+                    prefixes = prefixes[:limit]
+                    break
+            
+            logger.info(f"取得されたプレフィックス数: {len(prefixes)}")
+            
+            # 各プレフィックス（UUID）の基本情報を取得
+            for prefix in prefixes:
                 uuid = prefix.rstrip('/')
-                # 各セッションの基本情報を取得
+                if not uuid:  # 空のプレフィックスをスキップ
+                    continue
+                    
                 try:
                     analysis_data = self.get_analysis_result(uuid)
                     if analysis_data:
@@ -172,11 +188,30 @@ class GCSService:
                             "query": analysis_data.get("analysis_data", {}).get("query"),
                             "is_url": analysis_data.get("analysis_data", {}).get("is_url"),
                         })
+                    else:
+                        # 分析結果ファイルがない場合でも、UUIDとして認識できる場合は含める
+                        sessions.append({
+                            "uuid": uuid,
+                            "timestamp": None,
+                            "query": "分析結果不明",
+                            "is_url": None,
+                        })
                 except Exception as e:
                     logger.warning(f"セッション {uuid} の情報取得に失敗: {e}")
+                    # エラーが発生した場合でも、UUIDは含める
+                    sessions.append({
+                        "uuid": uuid,
+                        "timestamp": None,
+                        "query": f"エラー: {str(e)}",
+                        "is_url": None,
+                    })
                     continue
             
-            return sorted(sessions, key=lambda x: x.get("timestamp", ""), reverse=True)
+            # タイムスタンプでソート（新しい順）
+            sessions.sort(key=lambda x: x.get("timestamp") or "", reverse=True)
+            
+            logger.info(f"分析セッション一覧取得完了: {len(sessions)}件")
+            return sessions
             
         except Exception as e:
             logger.error(f"セッション一覧取得エラー: {e}")
