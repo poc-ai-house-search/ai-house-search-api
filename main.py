@@ -670,7 +670,7 @@ async def test_compression_levels(text: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 # Dockerfileで起動する場合、この部分は削除
-# if __name__ == "__main__":
-#     import uvicorn
-#     port = int(os.getenv("PORT", 8080))
-#     uvicorn.run(app, host="0.0.0.0", port=port)
+if __name__ == "__main__":
+    import uvicorn
+    port = int(os.getenv("PORT", 8080))
+    uvicorn.run(app, host="0.0.0.0", port=port)
