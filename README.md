@@ -18,6 +18,9 @@ property-analysis-api/
 │   └── schemas.py             # Pydanticモデル
 └── services/
     ├── __init__.py
+    ├── gcs_service.py    # GCSサービス
     ├── scraping_service.py    # スクレイピングサービス
+    ├── text_compression_service.py    # プロンプト圧縮サービス
+    ├── vertex_ai_search_service.py    # Vertex AIサービス
     └── gemini_service.py      # Gemini AIサービス
 </pre>

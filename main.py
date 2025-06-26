@@ -853,6 +853,68 @@ async def test_compression_levels(text: str):
         logger.error(f"圧縮テストエラー: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.get(f"{settings.API_PREFIX}/config/debug")
+async def config_debug():
+    """設定情報のデバッグ"""
+    return {
+        "settings": {
+            "ENABLE_VERTEX_AI_SEARCH": settings.ENABLE_VERTEX_AI_SEARCH,
+            "GCP_PROJECT_ID": getattr(settings, 'GCP_PROJECT_ID', 'NOT_SET'),
+            "VERTEX_AI_SEARCH_DATA_STORE_ID": getattr(settings, 'VERTEX_AI_SEARCH_DATA_STORE_ID', 'NOT_SET'),
+            "GCP_LOCATION": getattr(settings, 'GCP_LOCATION', 'NOT_SET'),
+        },
+        "environment_variables": {
+            "ENABLE_VERTEX_AI_SEARCH": os.environ.get("ENABLE_VERTEX_AI_SEARCH", "NOT_SET"),
+            "GCP_PROJECT_ID": os.environ.get("GCP_PROJECT_ID", "NOT_SET"),
+            "VERTEX_AI_SEARCH_DATA_STORE_ID": os.environ.get("VERTEX_AI_SEARCH_DATA_STORE_ID", "NOT_SET"),
+            "GCP_LOCATION": os.environ.get("GCP_LOCATION", "NOT_SET"),
+        },
+        "service_status": {
+            "vertex_ai_search_service_initialized": vertex_ai_search_service is not None,
+            "gcs_service_initialized": gcs_service is not None,
+            "gemini_service_initialized": gemini_service is not None,
+            "scraping_service_initialized": scraping_service is not None,
+        }
+    }
+
+@app.get(f"{settings.API_PREFIX}/vertex-search/debug")
+async def vertex_ai_search_debug():
+    """Vertex AI Search サービスの詳細デバッグ情報を取得"""
+    try:
+        debug_info = {
+            "service_enabled": settings.ENABLE_VERTEX_AI_SEARCH,
+            "service_initialized": vertex_ai_search_service is not None,
+            "settings": {
+                "ENABLE_VERTEX_AI_SEARCH": settings.ENABLE_VERTEX_AI_SEARCH,
+                "VERTEX_AI_SEARCH_DATA_STORE_ID": getattr(settings, 'VERTEX_AI_SEARCH_DATA_STORE_ID', 'None'),
+                "GCP_PROJECT_ID": getattr(settings, 'GCP_PROJECT_ID', 'None'),
+                "GCP_LOCATION": getattr(settings, 'GCP_LOCATION', 'None')
+            }
+        }
+        
+        if vertex_ai_search_service:
+            debug_info.update(vertex_ai_search_service.get_debug_info())
+            
+            # 接続テストを実行
+            debug_info["connection_test"] = {
+                "is_available": vertex_ai_search_service.is_available(),
+                "test_timestamp": None
+            }
+        else:
+            debug_info["error"] = "Vertex AI Search サービスが初期化されていません"
+        
+        return debug_info
+        
+    except Exception as e:
+        logger.error(f"Vertex AI Search デバッグ情報取得エラー: {e}")
+        return {
+            "error": str(e),
+            "error_type": type(e).__name__,
+            "service_enabled": settings.ENABLE_VERTEX_AI_SEARCH,
+            "service_initialized": vertex_ai_search_service is not None
+        }
+
+
 if __name__ == "__main__":
     import uvicorn
     # Cloud RunのPORT環境変数を優先的に使用
