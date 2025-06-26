@@ -21,6 +21,7 @@ class Settings:
     
     # GCS設定
     GCS_BUCKET_NAME: str = os.getenv("GCS_BUCKET_NAME", "")
+    GCS_CREDENTIALS_PATH: str = os.getenv("GCS_CREDENTIALS_PATH", "")
     ENABLE_GCS_STORAGE: bool = os.getenv("ENABLE_GCS_STORAGE", "false").lower() == "true"
     
     # スクレイピング設定
