@@ -14,7 +14,7 @@ class Settings:
     GCP_PROJECT_ID: str = os.getenv("GCP_PROJECT_ID", "")
     
     # Vertex AI Search設定
-    VERTEX_AI_SEARCH_DATA_STORE_ID: str = os.getenv("VERTEX_AI_SEARCH_DATA_STORE_ID", "hakkason_1750328643745")
+    VERTEX_AI_SEARCH_DATA_STORE_ID: str = os.getenv("VERTEX_AI_SEARCH_DATA_STORE_ID", "minatoku_1750066687052")
     GCP_LOCATION: str = os.getenv("GCP_LOCATION", "global")
     VERTEX_AI_SEARCH_SERVING_CONFIG_ID: str = os.getenv("VERTEX_AI_SEARCH_SERVING_CONFIG_ID", "default_serving_config")
     ENABLE_VERTEX_AI_SEARCH: bool = os.getenv("ENABLE_VERTEX_AI_SEARCH", "true").lower() == "true"
