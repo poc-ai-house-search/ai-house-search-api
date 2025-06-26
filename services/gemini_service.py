@@ -463,3 +463,234 @@ def analyze_financial_status(self, address: str, search_results: dict) -> dict:
                 "system_error": str(e)
             }
         }
+
+
+def analyze_financial_status(self, address: str, search_results: dict) -> dict:
+    """
+    住所の財務状況を分析
+    
+    Args:
+        address (str): 住所
+        search_results (dict): Vertex AI Searchの検索結果
+        
+    Returns:
+        dict: 財務分析結果
+    """
+    try:
+        # 検索結果からコンテンツを抽出
+        search_content = ""
+        if search_results.get("search_successful") and search_results.get("results"):
+            search_content = "\n\n".join([
+                f"【{result.get('title', 'タイトルなし')}】\n{result.get('snippet', result.get('content', ''))}"
+                for result in search_results["results"][:5]  # 上位5件使用
+            ])
+        
+        # プロンプトを構築
+        prompt = f"""
+以下の住所の財務状況について、検索結果をもとに詳細に分析してください。
+
+**住所**: {address}
+
+**検索結果からの関連情報**:
+{search_content if search_content else "関連情報が見つかりませんでした。"}
+
+**分析要求**:
+上記の検索結果を詳細に分析し、以下のJSON形式で財務状況を評価してください。数値データがある場合は必ず含めてください。
+
+**回答形式**（必ずこの形式のJSONで回答してください）:
+```json
+{{
+    "financial_status": "良い/悪い/普通",
+    "overall_score": 85,
+    "analysis_summary": "財務状況の概要（200文字程度）",
+    "positive_factors": [
+        {{
+            "factor": "良い要因のタイトル",
+            "description": "詳細な説明",
+            "evidence": "根拠となるデータや数値"
+        }}
+    ],
+    "negative_factors": [
+        {{
+            "factor": "悪い要因のタイトル", 
+            "description": "詳細な説明",
+            "evidence": "根拠となるデータや数値"
+        }}
+    ],
+    "financial_indicators": {{
+        "revenue_total": "歳入総額（判明している場合）",
+        "expenditure_total": "歳出総額（判明している場合）",
+        "debt_ratio": "実質公債費比率などの債務指標",
+        "per_capita_amount": "人口1人当たり決算額",
+        "annual_balance": "単年度収支",
+        "laspeyres_index": "ラスパイレス指数",
+        "other_indicators": [
+            "その他の重要な財務指標"
+        ]
+    }},
+    "detailed_analysis": {{
+        "revenue_structure": "歳入構造の分析",
+        "expenditure_structure": "歳出構造の分析", 
+        "financial_health": "財政健全性の評価",
+        "stability_factors": "安定性に関する要因",
+        "risk_factors": "リスク要因の分析"
+    }},
+    "comparative_analysis": {{
+        "vs_similar_areas": "類似地域との比較",
+        "ranking_position": "ランキングや順位",
+        "benchmark_comparison": "ベンチマークとの比較"
+    }},
+    "future_outlook": {{
+        "short_term": "短期的な見通し（1-2年）",
+        "medium_term": "中期的な見通し（3-5年）",
+        "key_challenges": "主要な課題",
+        "improvement_plans": "改善計画や取り組み"
+    }},
+    "risk_assessment": {{
+        "investment_risk": "low/medium/high",
+        "market_volatility": "low/medium/high", 
+        "liquidity_risk": "low/medium/high",
+        "policy_risk": "政策変更リスク"
+    }},
+    "recommendations": [
+        {{
+            "category": "投資/居住/事業など",
+            "recommendation": "具体的な推奨事項",
+            "rationale": "推奨理由"
+        }}
+    ],
+    "data_reliability": {{
+        "data_sources": {len(search_results.get('results', []))},
+        "data_freshness": "データの新しさ評価",
+        "confidence_level": "high/medium/low",
+        "limitations": "分析の限界や注意点"
+    }}
+}}
+```
+
+**重要な指示**:
+1. 検索結果に含まれる具体的な数値データは必ず financial_indicators セクションに含めてください
+2. 良い点・悪い点は検索結果の内容を正確に反映してください
+3. 根拠となるデータや数値を必ず evidence フィールドに記載してください
+4. 検索結果が不十分な場合は、その旨を limitations に記載してください
+5. スコアは0-100で評価してください（100が最良）
+"""
+
+        logger.info(f"財務分析開始: {address}")
+        
+        response = self.model.generate_content(prompt)
+        response_text = response.text.strip()
+        
+        # JSONの抽出と解析
+        try:
+            # ```json と ``` で囲まれた部分を抽出
+            if "```json" in response_text:
+                json_start = response_text.find("```json") + 7
+                json_end = response_text.find("```", json_start)
+                json_text = response_text[json_start:json_end].strip()
+            elif "```" in response_text and "{" in response_text:
+                # ```だけの場合も対応
+                json_start = response_text.find("```") + 3
+                json_end = response_text.find("```", json_start)
+                json_text = response_text[json_start:json_end].strip()
+            else:
+                # JSON部分を探す
+                json_start = response_text.find("{")
+                json_end = response_text.rfind("}") + 1
+                if json_start >= 0 and json_end > json_start:
+                    json_text = response_text[json_start:json_end]
+                else:
+                    json_text = response_text
+            
+            financial_analysis = json.loads(json_text)
+            
+            # 基本的な検証とデフォルト値の設定
+            required_fields = {
+                "financial_status": "普通",
+                "overall_score": 50,
+                "analysis_summary": "分析結果を取得しました",
+                "positive_factors": [],
+                "negative_factors": [],
+                "financial_indicators": {},
+                "detailed_analysis": {},
+                "risk_assessment": {},
+                "recommendations": [],
+                "data_reliability": {}
+            }
+            
+            for field, default_value in required_fields.items():
+                if field not in financial_analysis:
+                    financial_analysis[field] = default_value
+            
+            # スコアの検証
+            if not isinstance(financial_analysis.get("overall_score"), (int, float)):
+                financial_analysis["overall_score"] = 50
+            elif financial_analysis["overall_score"] > 100:
+                financial_analysis["overall_score"] = 100
+            elif financial_analysis["overall_score"] < 0:
+                financial_analysis["overall_score"] = 0
+            
+            # データ信頼性情報を自動設定
+            if "data_reliability" not in financial_analysis or not financial_analysis["data_reliability"]:
+                financial_analysis["data_reliability"] = {}
+            
+            financial_analysis["data_reliability"].update({
+                "data_sources": len(search_results.get('results', [])),
+                "search_successful": search_results.get("search_successful", False),
+                "vertex_ai_search_used": True
+            })
+            
+            # 信頼性レベルの自動判定
+            if not financial_analysis["data_reliability"].get("confidence_level"):
+                if len(search_results.get('results', [])) >= 3:
+                    financial_analysis["data_reliability"]["confidence_level"] = "high"
+                elif len(search_results.get('results', [])) >= 1:
+                    financial_analysis["data_reliability"]["confidence_level"] = "medium"
+                else:
+                    financial_analysis["data_reliability"]["confidence_level"] = "low"
+            
+            logger.info(f"財務分析完了: {address} - {financial_analysis.get('financial_status')} (スコア: {financial_analysis.get('overall_score')})")
+            return financial_analysis
+            
+        except json.JSONDecodeError as e:
+            logger.error(f"JSON解析エラー: {e}")
+            logger.debug(f"パース対象テキスト: {json_text[:500]}...")
+            
+            # フォールバック: 構造化された形式で返す
+            return {
+                "financial_status": "分析中",
+                "overall_score": 50,
+                "analysis_summary": "JSON解析に失敗しましたが、分析は実行されました",
+                "positive_factors": [{"factor": "分析実行", "description": "財務分析が実行されました", "evidence": "システムログ"}],
+                "negative_factors": [{"factor": "解析エラー", "description": "JSON解析でエラーが発生", "evidence": str(e)}],
+                "financial_indicators": {},
+                "detailed_analysis": {"raw_response": response_text[:1000]},
+                "risk_assessment": {"analysis_risk": "high"},
+                "recommendations": [{"category": "システム", "recommendation": "再試行してください", "rationale": "JSON解析エラー"}],
+                "data_reliability": {
+                    "data_sources": len(search_results.get('results', [])),
+                    "confidence_level": "low",
+                    "limitations": "JSON解析エラーが発生しました",
+                    "json_parse_error": str(e)
+                }
+            }
+            
+    except Exception as e:
+        logger.error(f"財務分析エラー: {e}")
+        return {
+            "financial_status": "エラー",
+            "overall_score": 0,
+            "analysis_summary": f"分析中にエラーが発生しました: {str(e)}",
+            "positive_factors": [],
+            "negative_factors": [{"factor": "システムエラー", "description": str(e), "evidence": "エラーログ"}],
+            "financial_indicators": {},
+            "detailed_analysis": {},
+            "risk_assessment": {"system_risk": "high"},
+            "recommendations": [{"category": "システム", "recommendation": "サポートに連絡してください", "rationale": "システムエラー"}],
+            "data_reliability": {
+                "data_sources": 0,
+                "confidence_level": "low",
+                "limitations": "システムエラーにより分析できませんでした",
+                "system_error": str(e)
+            }
+        }
