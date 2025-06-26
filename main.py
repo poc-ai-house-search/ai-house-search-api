@@ -1,4 +1,4 @@
-# main.py（UUID&GCS対応版）
+# main.py（完全版）
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
@@ -6,10 +6,12 @@ from models.schemas import QueryRequest, AnalysisResponse, HealthResponse
 from services.scraping_service import ScrapingService
 from services.gemini_service import GeminiService
 from services.gcs_service import GCSService
+from services.vertex_ai_search_service import VertexAISearchService
 from config.settings import settings
 import logging
 import os
 import uuid
+import json
 from contextlib import asynccontextmanager
 from typing import Optional, Dict, Any, Union
 
@@ -21,6 +23,7 @@ logger = logging.getLogger(__name__)
 scraping_service = None
 gemini_service = None
 gcs_service = None
+vertex_ai_search_service = None
 
 class TextCompressionRequest(BaseModel):
     """テキスト圧縮リクエストモデル"""
@@ -31,16 +34,24 @@ class TextCompressionRequest(BaseModel):
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """アプリケーションのライフサイクル管理"""
-    global scraping_service, gemini_service, gcs_service
+    global scraping_service, gemini_service, gcs_service, vertex_ai_search_service
     
     # 起動時
     try:
         logger.info("サービス初期化開始")
-        settings.validate()
-        scraping_service = ScrapingService()
-        gemini_service = GeminiService()
         
-        # GCS サービスの初期化（オプション）
+        # 設定値の検証（高速）
+        settings.validate()
+        logger.info("設定値検証完了")
+        
+        # 必須サービスの初期化
+        scraping_service = ScrapingService()
+        logger.info("スクレイピングサービス初期化完了")
+        
+        gemini_service = GeminiService()
+        logger.info("Geminiサービス初期化完了")
+        
+        # GCS サービスの初期化（オプション、エラーでも続行）
         if settings.ENABLE_GCS_STORAGE:
             try:
                 gcs_service = GCSService()
@@ -51,12 +62,31 @@ async def lifespan(app: FastAPI):
         else:
             logger.info("GCS ストレージは無効化されています")
             gcs_service = None
+        
+        # Vertex AI Search サービスの初期化（オプション、エラーでも続行）
+        if settings.ENABLE_VERTEX_AI_SEARCH:
+            try:
+                vertex_ai_search_service = VertexAISearchService()
+                if vertex_ai_search_service.is_available():
+                    logger.info("Vertex AI Search サービス初期化完了")
+                else:
+                    logger.warning("Vertex AI Search サービス接続テストに失敗")
+                    vertex_ai_search_service = None
+            except Exception as e:
+                logger.warning(f"Vertex AI Search サービス初期化に失敗（無効化されます）: {e}")
+                vertex_ai_search_service = None
+        else:
+            logger.info("Vertex AI Search は無効化されています")
+            vertex_ai_search_service = None
             
-        logger.info("サービス初期化完了")
+        logger.info("全サービス初期化完了")
         yield
+        
     except Exception as e:
         logger.error(f"初期化エラー: {e}")
-        raise
+        # 初期化に失敗してもアプリケーションは起動させる
+        logger.warning("一部サービスの初期化に失敗しましたが、アプリケーションを起動します")
+        yield
     finally:
         # 終了時
         logger.info("アプリケーション終了")
@@ -92,7 +122,7 @@ async def health_check():
 
 @app.post(f"{settings.API_PREFIX}/analyze", response_model=AnalysisResponse)
 async def analyze_property(request: QueryRequest):
-    """物件分析エンドポイント（UUID&GCS保存機能付き）"""
+    """物件分析エンドポイント（UUID&GCS保存機能付き + Vertex AI Search財務分析）"""
     # UUIDを生成
     analysis_uuid = str(uuid.uuid4())
     
@@ -169,6 +199,83 @@ async def analyze_property(request: QueryRequest):
             # 物件名の場合：直接Gemini分析
             analysis = gemini_service.analyze_property_by_name(query, request.response_format)
         
+        # 住所を抽出してVertex AI Searchで財務分析を実行
+        financial_analysis = None
+        vertex_search_results = None
+        
+        if vertex_ai_search_service and analysis and isinstance(analysis, dict):
+            try:
+                # analysisから住所を抽出（様々なパターンに対応）
+                address = None
+                if "address" in analysis:
+                    address = analysis["address"]
+                elif "住所" in analysis:
+                    address = analysis["住所"]
+                elif isinstance(analysis.get("basic_info"), dict):
+                    address = analysis["basic_info"].get("address") or analysis["basic_info"].get("住所")
+                elif "location" in analysis:
+                    address = analysis["location"]
+                
+                if address and isinstance(address, str) and len(address.strip()) > 0:
+                    logger.info(f"住所を検出、財務分析開始: {address}")
+                    
+                    # Vertex AI Searchで財務情報を検索
+                    vertex_search_results = vertex_ai_search_service.search_financial_info(address)
+                    
+                    # Geminiで財務分析を実行
+                    financial_analysis = gemini_service.analyze_financial_status(address, vertex_search_results)
+                    
+                    # analysisに財務分析結果を追加
+                    analysis["financial_analysis"] = financial_analysis
+                    analysis["vertex_search_info"] = {
+                        "search_executed": True,
+                        "search_successful": vertex_search_results.get("search_successful", False),
+                        "results_count": len(vertex_search_results.get("results", [])),
+                        "address_used": address
+                    }
+                    
+                    logger.info(f"財務分析完了: {financial_analysis.get('financial_status', 'Unknown')}")
+                else:
+                    logger.info("住所が検出されなかったため、財務分析をスキップ")
+                    analysis["financial_analysis"] = {
+                        "status": "skipped",
+                        "reason": "住所が検出されませんでした"
+                    }
+                    analysis["vertex_search_info"] = {
+                        "search_executed": False,
+                        "reason": "住所未検出"
+                    }
+                    
+            except Exception as e:
+                logger.error(f"財務分析でエラー: {e}")
+                analysis["financial_analysis"] = {
+                    "status": "error",
+                    "error": str(e)
+                }
+                analysis["vertex_search_info"] = {
+                    "search_executed": False,
+                    "error": str(e)
+                }
+        else:
+            if not vertex_ai_search_service:
+                logger.info("Vertex AI Search サービスが利用できないため、財務分析をスキップ")
+                analysis["financial_analysis"] = {
+                    "status": "unavailable",
+                    "reason": "Vertex AI Search サービスが無効化されています"
+                }
+            else:
+                logger.info("分析結果が不正な形式のため、財務分析をスキップ")
+                analysis["financial_analysis"] = {
+                    "status": "skipped",
+                    "reason": "分析結果が不正な形式です"
+                }
+            
+            analysis["vertex_search_info"] = {
+                "search_executed": False,
+                "vertex_ai_search_enabled": settings.ENABLE_VERTEX_AI_SEARCH,
+                "service_available": vertex_ai_search_service is not None
+            }
+        
         # レスポンス形式に応じた処理
         raw_analysis = None
         if request.response_format == "text" and "raw_response" in analysis:
@@ -210,7 +317,84 @@ async def analyze_property(request: QueryRequest):
     except Exception as e:
         logger.error(f"分析エラー: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+@app.post(f"{settings.API_PREFIX}/vertex-search")
+async def vertex_ai_search(query: str, page_size: int = 5):
+    """Vertex AI Search を直接実行するエンドポイント"""
+    try:
+        if not vertex_ai_search_service:
+            raise HTTPException(status_code=503, detail="Vertex AI Search サービスが利用できません")
+        
+        results = vertex_ai_search_service.search_general(query, page_size)
+        return results
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Vertex AI Search エラー: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+@app.post(f"{settings.API_PREFIX}/financial-analysis")
+async def analyze_financial_status_only(address: str):
+    """住所の財務状況のみを分析するエンドポイント"""
+    try:
+        if not vertex_ai_search_service:
+            raise HTTPException(status_code=503, detail="Vertex AI Search サービスが利用できません")
+        
+        if not gemini_service:
+            raise HTTPException(status_code=503, detail="Gemini サービスが利用できません")
+        
+        # Vertex AI Searchで財務情報を検索
+        search_results = vertex_ai_search_service.search_financial_info(address)
+        
+        # Geminiで財務分析を実行
+        financial_analysis = gemini_service.analyze_financial_status(address, search_results)
+        
+        return {
+            "address": address,
+            "financial_analysis": financial_analysis,
+            "search_results": search_results,
+            "analysis_timestamp": None
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"財務分析エラー: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get(f"{settings.API_PREFIX}/vertex-search/status")
+async def vertex_ai_search_status():
+    """Vertex AI Search サービスのステータスを確認"""
+    try:
+        if not vertex_ai_search_service:
+            return {
+                "service_enabled": settings.ENABLE_VERTEX_AI_SEARCH,
+                "service_available": False,
+                "status": "disabled",
+                "message": "Vertex AI Search サービスが無効化されています"
+            }
+        
+        is_available = vertex_ai_search_service.is_available()
+        
+        return {
+            "service_enabled": settings.ENABLE_VERTEX_AI_SEARCH,
+            "service_available": is_available,
+            "status": "healthy" if is_available else "unhealthy",
+            "data_store_id": vertex_ai_search_service.data_store_id,
+            "project_id": vertex_ai_search_service.project_id,
+            "location": vertex_ai_search_service.location,
+            "serving_config_id": vertex_ai_search_service.serving_config_id
+        }
+        
+    except Exception as e:
+        logger.error(f"Vertex AI Search ステータス確認エラー: {e}")
+        return {
+            "service_enabled": settings.ENABLE_VERTEX_AI_SEARCH,
+            "service_available": False,
+            "status": "error",
+            "error": str(e)
+        }
 
 @app.post(f"{settings.API_PREFIX}/compress-text")
 async def compress_text_only(request: TextCompressionRequest) -> Dict[str, Any]:
@@ -669,8 +853,15 @@ async def test_compression_levels(text: str):
         logger.error(f"圧縮テストエラー: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-# Dockerfileで起動する場合、この部分は削除
 if __name__ == "__main__":
     import uvicorn
+    # Cloud RunのPORT環境変数を優先的に使用
     port = int(os.getenv("PORT", 8080))
-    uvicorn.run(app, host="0.0.0.0", port=port)
+    logger.info(f"Starting server on port {port}")
+    uvicorn.run(
+        app, 
+        host="0.0.0.0", 
+        port=port,
+        log_level="info",
+        access_log=True
+    )
