@@ -72,6 +72,24 @@ class VertexAISearchService:
                 ),
                 spell_correction_spec=discoveryengine.SearchRequest.SpellCorrectionSpec(
                     mode=discoveryengine.SearchRequest.SpellCorrectionSpec.Mode.AUTO
+                ),
+                # ContentSearchSpecを追加してスニペットとサマリーを取得
+                content_search_spec=discoveryengine.SearchRequest.ContentSearchSpec(
+                    snippet_spec=discoveryengine.SearchRequest.ContentSearchSpec.SnippetSpec(
+                        return_snippet=True,
+                        max_snippet_count=3
+                    ),
+                    summary_spec=discoveryengine.SearchRequest.ContentSearchSpec.SummarySpec(
+                        summary_result_count=5,
+                        include_citations=True,
+                        ignore_adversarial_query=True,
+                        ignore_non_summary_seeking_query=True
+                    ),
+                    extractive_content_spec=discoveryengine.SearchRequest.ContentSearchSpec.ExtractiveContentSpec(
+                        max_extractive_answer_count=1,
+                        max_extractive_segment_count=1,
+                        return_extractive_segment_score=True
+                    )
                 )
             )
             
@@ -83,23 +101,39 @@ class VertexAISearchService:
             for result in response.results:
                 document = result.document
                 
-                # スニペットの抽出
+                # スニペットの抽出（新しい方法）
                 snippets = []
-                if hasattr(document, 'derived_struct_data') and document.derived_struct_data:
-                    # derived_struct_dataからスニペットを取得
-                    derived_data = dict(document.derived_struct_data)
+                if hasattr(result, 'document') and hasattr(result.document, 'derived_struct_data'):
+                    derived_data = dict(result.document.derived_struct_data) if result.document.derived_struct_data else {}
+                    
+                    # スニペットの取得
                     if 'snippets' in derived_data:
-                        for snippet_data in derived_data['snippets']:
-                            if isinstance(snippet_data, dict) and 'snippet' in snippet_data:
-                                snippets.append(snippet_data['snippet'])
-                            elif isinstance(snippet_data, str):
-                                snippets.append(snippet_data)
+                        for snippet_info in derived_data['snippets']:
+                            if isinstance(snippet_info, dict):
+                                snippet_text = snippet_info.get('snippet', '')
+                                if snippet_text:
+                                    snippets.append(snippet_text)
+                    
+                    # extractive_answersからも取得
+                    if 'extractive_answers' in derived_data:
+                        for answer in derived_data['extractive_answers']:
+                            if isinstance(answer, dict) and 'content' in answer:
+                                snippets.append(answer['content'])
+                    
+                    # extractive_segmentsからも取得
+                    if 'extractive_segments' in derived_data:
+                        for segment in derived_data['extractive_segments']:
+                            if isinstance(segment, dict) and 'content' in segment:
+                                snippets.append(segment['content'])
                 
                 # コンテンツの抽出
                 content = ""
                 if hasattr(document, 'struct_data') and document.struct_data:
                     struct_data = dict(document.struct_data)
                     content = struct_data.get('content', '')
+                elif hasattr(document, 'derived_struct_data') and document.derived_struct_data:
+                    derived_data = dict(document.derived_struct_data)
+                    content = derived_data.get('content', '')
                 
                 # URIの抽出
                 uri = ""
@@ -119,15 +153,16 @@ class VertexAISearchService:
                 
                 result_item = {
                     "document_id": document.id,
-                    "title": title,
+                    "title": title if title else "タイトル未取得",
                     "uri": uri,
-                    "snippet": " ".join(snippets) if snippets else "スニペットなし",
+                    "snippet": " | ".join(snippets) if snippets else "スニペット未生成",
                     "content": content,
                     "relevance_score": getattr(result, 'relevance_score', 0),
                     "metadata": {
                         "category": "",
                         "date": "",
-                        "source": uri
+                        "source": uri,
+                        "snippet_count": len(snippets)
                     }
                 }
                 results.append(result_item)
@@ -143,12 +178,12 @@ class VertexAISearchService:
                 "search_successful": True,
                 "results": results,
                 "total_size": getattr(response, 'total_size', len(results)),
-                "query": query,  
+                "query": query,  # ← ここを修正: query_text → query
                 "address": address,
                 "summary": summary_text,
                 "search_metadata": {
-                    "data_store_id": settings.VERTEX_AI_SEARCH_DATA_STORE_ID,
-                    "location": settings.GCP_LOCATION,
+                    "data_store_id": self.data_store_id,  # ← settings経由での参照を修正
+                    "location": self.location,           # ← settings経由での参照を修正
                     "results_count": len(results)
                 }
             }
@@ -180,7 +215,14 @@ class VertexAISearchService:
             request = discoveryengine.SearchRequest(
                 serving_config=self.serving_config_path,
                 query=query,
-                page_size=page_size
+                page_size=page_size,
+                # ContentSearchSpecを追加してスニペットを取得
+                content_search_spec=discoveryengine.SearchRequest.ContentSearchSpec(
+                    snippet_spec=discoveryengine.SearchRequest.ContentSearchSpec.SnippetSpec(
+                        return_snippet=True,
+                        max_snippet_count=2
+                    )
+                )
             )
             
             response = self.client.search(request)
@@ -188,13 +230,30 @@ class VertexAISearchService:
             results = []
             for result in response.results:
                 try:
+                    # スニペットを適切に取得
+                    snippet_text = "スニペット未生成"
+                    if hasattr(result, 'document') and hasattr(result.document, 'derived_struct_data'):
+                        derived_data = dict(result.document.derived_struct_data) if result.document.derived_struct_data else {}
+                        
+                        # 様々な場所からスニペットを取得
+                        snippets = []
+                        if 'snippets' in derived_data:
+                            for snippet_info in derived_data['snippets']:
+                                if isinstance(snippet_info, dict):
+                                    snippet_text_item = snippet_info.get('snippet', '')
+                                    if snippet_text_item:
+                                        snippets.append(snippet_text_item)
+                        
+                        if snippets:
+                            snippet_text = " | ".join(snippets)
+                    
                     doc_data = result.document.derived_struct_data if result.document.derived_struct_data else {}
                     
                     data = {
                         "document_id": result.document.id,
-                        "title": doc_data.get("title", "タイトルなし"),
+                        "title": doc_data.get("title", "タイトル未取得"),
                         "uri": doc_data.get("uri", ""),
-                        "snippet": doc_data.get("snippet", "スニペットなし"),
+                        "snippet": snippet_text,
                         "content": doc_data.get("content", ""),
                         "relevance_score": getattr(result, 'relevance_score', 0.0)
                     }
