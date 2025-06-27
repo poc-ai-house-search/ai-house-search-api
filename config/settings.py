@@ -30,6 +30,9 @@ class Settings:
     DEFAULT_COMPRESSION_RATIO: float = float(os.getenv("DEFAULT_COMPRESSION_RATIO", "0.6"))
     MIN_TEXT_LENGTH_FOR_COMPRESSION: int = int(os.getenv("MIN_TEXT_LENGTH_FOR_COMPRESSION", "10000"))
     ENABLE_COMPRESSION: bool = os.getenv("ENABLE_COMPRESSION", "true").lower() == "true"
+    REQUEST_TIMEOUT: int = int(os.getenv("REQUEST_TIMEOUT", "30"))
+    USER_AGENT: str = os.getenv("USER_AGENT", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
+    MAX_RETRIES: int = int(os.getenv("MAX_RETRIES", "3"))
     
     # CORS設定
     CORS_ORIGINS: List[str] = ["*"]
