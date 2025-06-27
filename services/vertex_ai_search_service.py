@@ -19,7 +19,7 @@ class VertexAISearchService:
             self.data_store_id = getattr(settings, 'VERTEX_AI_SEARCH_DATA_STORE_ID', 
                                        os.environ.get("VERTEX_AI_SEARCH_DATA_STORE_ID", "hakkason_1750328643745"))
             self.serving_config_id = getattr(settings, 'VERTEX_AI_SEARCH_SERVING_CONFIG_ID',
-                                           os.environ.get("VERTEX_AI_SEARCH_SERVING_CONFIG_ID", "default_serving_config"))
+                                           os.environ.get("VERTEX_AI_SEARCH_SERVING_CONFIG_ID", "default_search"))
             
             if not self.project_id:
                 raise ValueError("GCP_PROJECT_ID が設定されていません")
@@ -60,6 +60,7 @@ class VertexAISearchService:
             query = f"{address}の財務状況について、良い悪いと根拠を含めて教えてください"
             
             logger.info(f"Vertex AI Search実行: {query}")
+            logger.info(f"サービング設定パス: {self.serving_config_path}")
             
             # 検索リクエストの構築
             request = discoveryengine.SearchRequest(
