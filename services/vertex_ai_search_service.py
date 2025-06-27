@@ -28,18 +28,14 @@ class VertexAISearchService:
             # クライアント初期化
             self.client = discoveryengine.SearchServiceClient(client_options=client_options)
             
-            # サービング設定のパス構築
-            self.serving_config = self.client.serving_config_path(
-                project=settings.GCP_PROJECT_ID,
-                location=settings.GCP_LOCATION,
-                data_store=settings.VERTEX_AI_SEARCH_DATA_STORE_ID,
-                serving_config="default_config"
-            )
+            # サービング設定のパス構築（正しい方法）
+            self.serving_config = f"projects/{settings.GCP_PROJECT_ID}/locations/{settings.GCP_LOCATION}/collections/default_collection/dataStores/{settings.VERTEX_AI_SEARCH_DATA_STORE_ID}/servingConfigs/default_config"
             
             logger.info(f"Vertex AI Search サービス初期化完了")
             logger.info(f"プロジェクト: {settings.GCP_PROJECT_ID}")
             logger.info(f"データストア: {settings.VERTEX_AI_SEARCH_DATA_STORE_ID}")
             logger.info(f"ロケーション: {settings.GCP_LOCATION}")
+            logger.info(f"サービング設定: {self.serving_config}")
             
         except Exception as e:
             logger.error(f"Vertex AI Search サービス初期化エラー: {e}")
@@ -191,85 +187,3 @@ class VertexAISearchService:
                 "query": f"{address}の財務状況について、良い悪いと根拠を含めて教えてください",
                 "address": address
             }
-        
-    def search_general(self, query: str, page_size: int = 5) -> Dict[str, Any]:
-        """
-        一般的な検索を実行
-        
-        Args:
-            query (str): 検索クエリ
-            page_size (int): 取得する結果の数
-            
-        Returns:
-            Dict[str, Any]: 検索結果
-        """
-        try:
-            logger.info(f"一般検索実行: {query}")
-            
-            request = discoveryengine.SearchRequest(
-                serving_config=self.serving_config_path,
-                query=query,
-                page_size=page_size
-            )
-            
-            response = self.client.search(request)
-            
-            results = []
-            for result in response.results:
-                try:
-                    doc_data = result.document.derived_struct_data if result.document.derived_struct_data else {}
-                    
-                    data = {
-                        "document_id": result.document.id,
-                        "title": doc_data.get("title", "タイトルなし"),
-                        "uri": doc_data.get("uri", ""),
-                        "snippet": doc_data.get("snippet", "スニペットなし"),
-                        "content": doc_data.get("content", ""),
-                        "relevance_score": getattr(result, 'relevance_score', 0.0)
-                    }
-                    results.append(data)
-                    
-                except Exception as e:
-                    logger.warning(f"検索結果の処理でエラー: {e}")
-                    continue
-            
-            return {
-                "query": query,
-                "results": results,
-                "total_size": getattr(response, 'total_size', 0),
-                "search_successful": True
-            }
-            
-        except Exception as e:
-            logger.error(f"一般検索エラー: {e}")
-            return {
-                "query": query,
-                "results": [],
-                "total_size": 0,
-                "search_successful": False,
-                "error": str(e)
-            }
-    
-    def is_available(self) -> bool:
-        """
-        Vertex AI Search サービスが利用可能かチェック
-        
-        Returns:
-            bool: 利用可能な場合True
-        """
-        try:
-            # 簡単なテスト検索を実行
-            test_query = "test"
-            request = discoveryengine.SearchRequest(
-                serving_config=self.serving_config_path,
-                query=test_query,
-                page_size=1
-            )
-            
-            response = self.client.search(request)
-            logger.info("Vertex AI Search 接続テスト成功")
-            return True
-            
-        except Exception as e:
-            logger.error(f"Vertex AI Search 接続テスト失敗: {e}")
-            return False
