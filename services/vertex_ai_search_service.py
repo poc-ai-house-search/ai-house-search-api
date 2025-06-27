@@ -143,7 +143,7 @@ class VertexAISearchService:
                 "search_successful": True,
                 "results": results,
                 "total_size": getattr(response, 'total_size', len(results)),
-                "query": query_text,
+                "query": query,  
                 "address": address,
                 "summary": summary_text,
                 "search_metadata": {
@@ -244,3 +244,19 @@ class VertexAISearchService:
         except Exception as e:
             logger.error(f"Vertex AI Search 接続テスト失敗: {e}")
             return False
+    
+    def get_debug_info(self) -> Dict[str, Any]:
+        """
+        デバッグ情報を取得
+        
+        Returns:
+            Dict[str, Any]: デバッグ情報
+        """
+        return {
+            "project_id": self.project_id,
+            "location": self.location,
+            "data_store_id": self.data_store_id,
+            "serving_config_id": self.serving_config_id,
+            "serving_config_path": self.serving_config_path,
+            "client_initialized": self.client is not None
+        }
