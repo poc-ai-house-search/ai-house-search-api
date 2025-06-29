@@ -84,7 +84,30 @@ class VertexAISearchService:
                         model_version="stable"
                     ),
                     prompt_spec=discoveryengine.AnswerRequest.AnswerGenerationSpec.PromptSpec(
-                        preamble="あなたは財務アナリストです。提供された情報を基に、正確で詳細な財務分析を行ってください。"
+                        preamble="""あなたは財務アナリストです。提供された情報を基に、以下のJSON形式で正確で詳細な財務分析を行ってください。
+
+返答は必ず以下のJSON形式で行ってください：
+{
+  "positive_factors": [
+    "良い点1の詳細説明",
+    "良い点2の詳細説明"
+  ],
+  "negative_factors": [
+    "悪い点1の詳細説明", 
+    "悪い点2の詳細説明"
+  ],
+  "financial_indicators": {
+    "revenue_total": "歳入総額（単位付き）",
+    "expenditure_total": "歳出総額（単位付き）",
+    "surplus_deficit": "収支状況",
+    "debt_ratio": "借金比率",
+    "financial_strength_index": "財政力指数"
+  },
+  "overall_assessment": "総合評価（良好/普通/懸念）",
+  "summary": "財務状況の総括"
+}
+
+データが不足している場合は「データ不足」と記載してください。"""
                     ),
                     include_citations=True,
                     answer_language_code="ja"
@@ -98,9 +121,43 @@ class VertexAISearchService:
             answer_text = ""
             search_results = []
             citations = []
+            parsed_financial_data = None
             
             if hasattr(response, 'answer') and response.answer:
                 answer_text = response.answer.answer_text
+                
+                # JSON形式の回答をパースして構造化
+                try:
+                    # JSONとして解析を試行
+                    import json
+                    import re
+                    
+                    # コードブロックやマークダウンから JSON を抽出
+                    json_match = re.search(r'```(?:json)?\s*(\{.*?\})\s*```', answer_text, re.DOTALL)
+                    if json_match:
+                        json_text = json_match.group(1)
+                    else:
+                        # 直接JSONを探す
+                        json_match = re.search(r'\{.*\}', answer_text, re.DOTALL)
+                        if json_match:
+                            json_text = json_match.group(0)
+                        else:
+                            json_text = answer_text
+                    
+                    parsed_financial_data = json.loads(json_text)
+                    logger.info("Vertex AI Search の回答をJSON形式で解析成功")
+                    
+                except (json.JSONDecodeError, AttributeError) as e:
+                    logger.warning(f"JSON解析に失敗、テキスト形式で処理: {e}")
+                    # JSON解析に失敗した場合はテキストのまま処理
+                    parsed_financial_data = {
+                        "positive_factors": [],
+                        "negative_factors": [],
+                        "financial_indicators": {},
+                        "overall_assessment": "解析不能",
+                        "summary": answer_text,
+                        "raw_response": answer_text
+                    }
                 
                 # ステップ情報から検索結果を抽出
                 if hasattr(response.answer, 'steps'):
@@ -141,14 +198,16 @@ class VertexAISearchService:
                 "total_size": len(search_results),
                 "query": query_text,
                 "address": address,
-                "summary": answer_text,  # Answer APIからの生成回答をサマリーとして使用
+                "summary": answer_text,  # 元の文章形式
                 "answer_text": answer_text,  # Answer API固有のフィールド
+                "structured_data": parsed_financial_data,  # 構造化されたJSON形式のデータ
                 "citations": citations,
                 "search_metadata": {
                     "data_store_id": self.data_store_id,
                     "location": self.location,
                     "results_count": len(search_results),
-                    "api_type": "answer"
+                    "api_type": "answer",
+                    "json_parsed": parsed_financial_data is not None and "raw_response" not in parsed_financial_data
                 }
             }
             

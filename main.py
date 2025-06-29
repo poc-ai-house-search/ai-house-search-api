@@ -225,16 +225,44 @@ async def analyze_property(request: QueryRequest):
                     # Geminiで財務分析を実行
                     financial_analysis = gemini_service.analyze_financial_status(address, vertex_search_results)
                     
-                    # vertex_search_resultsからsummaryを取得してfinancial_analysisに追加
+                    # vertex_search_resultsからstructured_dataを取得
                     vertex_summary = vertex_search_results.get("summary", "") or vertex_search_results.get("answer_text", "")
+                    vertex_structured_data = vertex_search_results.get("structured_data", {})
                     
                     # financial_analysisにVertex AI Searchの結果を統合
                     if financial_analysis and isinstance(financial_analysis, dict):
                         # 既存のanalysis_summaryとVertex AI Searchの結果を組み合わせ
                         existing_summary = financial_analysis.get("analysis_summary", "")
                         
-                        if vertex_summary:
-                            # Vertex AI Searchの詳細情報を追加
+                        # 構造化データが利用可能な場合
+                        if vertex_structured_data and vertex_structured_data.get("positive_factors") or vertex_structured_data.get("negative_factors"):
+                            # JSON形式のデータをfinancial_analysisに統合
+                            if vertex_structured_data.get("positive_factors"):
+                                existing_positive = financial_analysis.get("positive_factors", [])
+                                financial_analysis["positive_factors"] = existing_positive + vertex_structured_data["positive_factors"]
+                            
+                            if vertex_structured_data.get("negative_factors"):
+                                existing_negative = financial_analysis.get("negative_factors", [])
+                                financial_analysis["negative_factors"] = existing_negative + vertex_structured_data["negative_factors"]
+                            
+                            # 財務指標の統合
+                            if vertex_structured_data.get("financial_indicators"):
+                                existing_indicators = financial_analysis.get("financial_indicators", {})
+                                existing_indicators.update(vertex_structured_data["financial_indicators"])
+                                financial_analysis["financial_indicators"] = existing_indicators
+                            
+                            # サマリーの更新
+                            if vertex_structured_data.get("summary"):
+                                enhanced_summary = f"{existing_summary}\n\n【Vertex AI Search による詳細分析】\n{vertex_structured_data['summary']}"
+                            else:
+                                enhanced_summary = f"{existing_summary}\n\n【Vertex AI Search による詳細情報】\n{vertex_summary}"
+                            
+                            financial_analysis["analysis_summary"] = enhanced_summary.strip()
+                            financial_analysis["vertex_ai_search_data"] = vertex_structured_data
+                            financial_analysis["overall_assessment"] = vertex_structured_data.get("overall_assessment", "不明")
+                            
+                        elif vertex_summary:
+                            # テキスト形式のフォールバック
                             enhanced_summary = f"{existing_summary}\n\n【Vertex AI Search による詳細情報】\n{vertex_summary}"
                             financial_analysis["analysis_summary"] = enhanced_summary.strip()
                             financial_analysis["vertex_ai_search_summary"] = vertex_summary
@@ -243,7 +271,8 @@ async def analyze_property(request: QueryRequest):
                         financial_analysis["search_metadata"] = {
                             "search_successful": vertex_search_results.get("search_successful", False),
                             "results_count": len(vertex_search_results.get("results", [])),
-                            "api_type": vertex_search_results.get("search_metadata", {}).get("api_type", "unknown")
+                            "api_type": vertex_search_results.get("search_metadata", {}).get("api_type", "unknown"),
+                            "json_structured": bool(vertex_structured_data and vertex_structured_data.get("positive_factors"))
                         }
                     
                     # analysisに財務分析結果を追加
@@ -253,7 +282,8 @@ async def analyze_property(request: QueryRequest):
                         "search_successful": vertex_search_results.get("search_successful", False),
                         "results_count": len(vertex_search_results.get("results", [])),
                         "address_used": address,
-                        "has_summary": bool(vertex_summary)
+                        "has_summary": bool(vertex_summary),
+                        "has_structured_data": bool(vertex_structured_data and vertex_structured_data.get("positive_factors"))
                     }
                     
                     logger.info(f"財務分析完了: {financial_analysis.get('financial_status', 'Unknown')}")
