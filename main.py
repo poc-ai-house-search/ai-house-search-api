@@ -225,13 +225,35 @@ async def analyze_property(request: QueryRequest):
                     # Geminiで財務分析を実行
                     financial_analysis = gemini_service.analyze_financial_status(address, vertex_search_results)
                     
+                    # vertex_search_resultsからsummaryを取得してfinancial_analysisに追加
+                    vertex_summary = vertex_search_results.get("summary", "") or vertex_search_results.get("answer_text", "")
+                    
+                    # financial_analysisにVertex AI Searchの結果を統合
+                    if financial_analysis and isinstance(financial_analysis, dict):
+                        # 既存のanalysis_summaryとVertex AI Searchの結果を組み合わせ
+                        existing_summary = financial_analysis.get("analysis_summary", "")
+                        
+                        if vertex_summary:
+                            # Vertex AI Searchの詳細情報を追加
+                            enhanced_summary = f"{existing_summary}\n\n【Vertex AI Search による詳細情報】\n{vertex_summary}"
+                            financial_analysis["analysis_summary"] = enhanced_summary.strip()
+                            financial_analysis["vertex_ai_search_summary"] = vertex_summary
+                        
+                        # 検索結果のメタデータも追加
+                        financial_analysis["search_metadata"] = {
+                            "search_successful": vertex_search_results.get("search_successful", False),
+                            "results_count": len(vertex_search_results.get("results", [])),
+                            "api_type": vertex_search_results.get("search_metadata", {}).get("api_type", "unknown")
+                        }
+                    
                     # analysisに財務分析結果を追加
                     analysis["financial_analysis"] = financial_analysis
                     analysis["vertex_search_info"] = {
                         "search_executed": True,
                         "search_successful": vertex_search_results.get("search_successful", False),
                         "results_count": len(vertex_search_results.get("results", [])),
-                        "address_used": address
+                        "address_used": address,
+                        "has_summary": bool(vertex_summary)
                     }
                     
                     logger.info(f"財務分析完了: {financial_analysis.get('financial_status', 'Unknown')}")
@@ -239,7 +261,8 @@ async def analyze_property(request: QueryRequest):
                     logger.info("住所が検出されなかったため、財務分析をスキップ")
                     analysis["financial_analysis"] = {
                         "status": "skipped",
-                        "reason": "住所が検出されませんでした"
+                        "reason": "住所が検出されませんでした",
+                        "analysis_summary": "住所情報が不足しているため、財務状況の分析を実行できませんでした。"
                     }
                     analysis["vertex_search_info"] = {
                         "search_executed": False,
@@ -250,7 +273,8 @@ async def analyze_property(request: QueryRequest):
                 logger.error(f"財務分析でエラー: {e}")
                 analysis["financial_analysis"] = {
                     "status": "error",
-                    "error": str(e)
+                    "error": str(e),
+                    "analysis_summary": f"財務分析中にエラーが発生しました: {str(e)}"
                 }
                 analysis["vertex_search_info"] = {
                     "search_executed": False,
@@ -261,13 +285,15 @@ async def analyze_property(request: QueryRequest):
                 logger.info("Vertex AI Search サービスが利用できないため、財務分析をスキップ")
                 analysis["financial_analysis"] = {
                     "status": "unavailable",
-                    "reason": "Vertex AI Search サービスが無効化されています"
+                    "reason": "Vertex AI Search サービスが無効化されています",
+                    "analysis_summary": "Vertex AI Search サービスが利用できないため、財務分析は実行されませんでした。"
                 }
             else:
                 logger.info("分析結果が不正な形式のため、財務分析をスキップ")
                 analysis["financial_analysis"] = {
                     "status": "skipped",
-                    "reason": "分析結果が不正な形式です"
+                    "reason": "分析結果が不正な形式です",
+                    "analysis_summary": "物件分析結果の形式が不正なため、財務分析を実行できませんでした。"
                 }
             
             analysis["vertex_search_info"] = {
@@ -913,44 +939,6 @@ async def vertex_ai_search_debug():
             "service_enabled": settings.ENABLE_VERTEX_AI_SEARCH,
             "service_initialized": vertex_ai_search_service is not None
         }
-@app.get(f"{settings.API_PREFIX}/vertex-search/debug")
-async def vertex_ai_search_debug():
-    """Vertex AI Search サービスの詳細デバッグ情報を取得"""
-    try:
-        debug_info = {
-            "service_enabled": settings.ENABLE_VERTEX_AI_SEARCH,
-            "service_initialized": vertex_ai_search_service is not None,
-            "settings": {
-                "ENABLE_VERTEX_AI_SEARCH": settings.ENABLE_VERTEX_AI_SEARCH,
-                "VERTEX_AI_SEARCH_DATA_STORE_ID": getattr(settings, 'VERTEX_AI_SEARCH_DATA_STORE_ID', 'None'),
-                "GCP_PROJECT_ID": getattr(settings, 'GCP_PROJECT_ID', 'None'),
-                "GCP_LOCATION": getattr(settings, 'GCP_LOCATION', 'None')
-            }
-        }
-        
-        if vertex_ai_search_service:
-            debug_info.update(vertex_ai_search_service.get_debug_info())
-            
-            # 接続テストを実行
-            debug_info["connection_test"] = {
-                "is_available": vertex_ai_search_service.is_available(),
-                "test_timestamp": None
-            }
-        else:
-            debug_info["error"] = "Vertex AI Search サービスが初期化されていません"
-        
-        return debug_info
-        
-    except Exception as e:
-        logger.error(f"Vertex AI Search デバッグ情報取得エラー: {e}")
-        return {
-            "error": str(e),
-            "error_type": type(e).__name__,
-            "service_enabled": settings.ENABLE_VERTEX_AI_SEARCH,
-            "service_initialized": vertex_ai_search_service is not None
-        }
-
-
 
 if __name__ == "__main__":
     import uvicorn
