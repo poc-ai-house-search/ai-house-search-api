@@ -46,7 +46,7 @@ class VertexAISearchService:
     
     def search_financial_info(self, address: str, page_size: int = 5) -> Dict[str, Any]:
         """
-        指定された住所の財務状況に関する情報を検索
+        指定された住所の財務状況に関する情報を検索（Answer APIを使用）
         
         Args:
             address (str): 検索対象の住所
@@ -57,147 +57,107 @@ class VertexAISearchService:
         """
         try:
             # 検索クエリを構築（財務状況に特化）
-            query = f"{address}の財務状況について、良い悪いと根拠を含めて教えてください"
+            query_text = f"{address}の財務状況について、良い悪いと根拠を含めて教えてください"
             
-            logger.info(f"Vertex AI Search実行: {query}")
+            logger.info(f"Vertex AI Search Answer API実行: {query_text}")
             logger.info(f"サービング設定パス: {self.serving_config_path}")
             
-            # 検索リクエストの構築
-            request = discoveryengine.SearchRequest(
+            # Answer APIリクエストの構築
+            request = discoveryengine.AnswerRequest(
                 serving_config=self.serving_config_path,
-                query=query,
-                page_size=page_size,
-                # 検索結果の品質向上のための設定
-                query_expansion_spec=discoveryengine.SearchRequest.QueryExpansionSpec(
-                    condition=discoveryengine.SearchRequest.QueryExpansionSpec.Condition.AUTO
-                ),
-                spell_correction_spec=discoveryengine.SearchRequest.SpellCorrectionSpec(
-                    mode=discoveryengine.SearchRequest.SpellCorrectionSpec.Mode.AUTO
-                ),
-                # ContentSearchSpecを追加してスニペットとサマリーを取得
-                content_search_spec=discoveryengine.SearchRequest.ContentSearchSpec(
-                    snippet_spec=discoveryengine.SearchRequest.ContentSearchSpec.SnippetSpec(
-                        return_snippet=True,
-                        max_snippet_count=3
+                query=discoveryengine.Query(text=query_text),
+                # 検索仕様を追加
+                search_spec=discoveryengine.AnswerRequest.SearchSpec(
+                    search_params=discoveryengine.AnswerRequest.SearchSpec.SearchParams(
+                        max_return_results=page_size,
+                        # 検索結果の品質向上のための設定
+                        boost_spec=None,
+                        filter=""
                     ),
-                    summary_spec=discoveryengine.SearchRequest.ContentSearchSpec.SummarySpec(
-                        summary_result_count=5,
-                        include_citations=True,
-                        ignore_adversarial_query=True,
-                        ignore_non_summary_seeking_query=True
-                    ),
-                    extractive_content_spec=discoveryengine.SearchRequest.ContentSearchSpec.ExtractiveContentSpec(
-                        max_extractive_answer_count=1,
-                        max_extractive_segment_count=1,
-                        return_extractive_segment_score=True
+                    search_result_list=discoveryengine.AnswerRequest.SearchSpec.SearchResultList(
+                        search_results=[]
                     )
+                ),
+                # 回答生成仕様
+                answer_generation_spec=discoveryengine.AnswerRequest.AnswerGenerationSpec(
+                    model_spec=discoveryengine.AnswerRequest.AnswerGenerationSpec.ModelSpec(
+                        model_version="stable"
+                    ),
+                    prompt_spec=discoveryengine.AnswerRequest.AnswerGenerationSpec.PromptSpec(
+                        preamble="あなたは財務アナリストです。提供された情報を基に、正確で詳細な財務分析を行ってください。"
+                    ),
+                    include_citations=True,
+                    answer_language_code="ja"
                 )
             )
             
-            # 検索の実行
-            response = self.client.search(request)
+            # Answer APIの実行
+            response = self.client.answer(request)
             
-            # 結果の処理
-            results = []
-            for result in response.results:
-                document = result.document
-                
-                # スニペットの抽出（新しい方法）
-                snippets = []
-                if hasattr(result, 'document') and hasattr(result.document, 'derived_struct_data'):
-                    derived_data = dict(result.document.derived_struct_data) if result.document.derived_struct_data else {}
-                    
-                    # スニペットの取得
-                    if 'snippets' in derived_data:
-                        for snippet_info in derived_data['snippets']:
-                            if isinstance(snippet_info, dict):
-                                snippet_text = snippet_info.get('snippet', '')
-                                if snippet_text:
-                                    snippets.append(snippet_text)
-                    
-                    # extractive_answersからも取得
-                    if 'extractive_answers' in derived_data:
-                        for answer in derived_data['extractive_answers']:
-                            if isinstance(answer, dict) and 'content' in answer:
-                                snippets.append(answer['content'])
-                    
-                    # extractive_segmentsからも取得
-                    if 'extractive_segments' in derived_data:
-                        for segment in derived_data['extractive_segments']:
-                            if isinstance(segment, dict) and 'content' in segment:
-                                snippets.append(segment['content'])
-                
-                # コンテンツの抽出
-                content = ""
-                if hasattr(document, 'struct_data') and document.struct_data:
-                    struct_data = dict(document.struct_data)
-                    content = struct_data.get('content', '')
-                elif hasattr(document, 'derived_struct_data') and document.derived_struct_data:
-                    derived_data = dict(document.derived_struct_data)
-                    content = derived_data.get('content', '')
-                
-                # URIの抽出
-                uri = ""
-                if hasattr(document, 'derived_struct_data') and document.derived_struct_data:
-                    derived_data = dict(document.derived_struct_data)
-                    uri = derived_data.get('link', derived_data.get('uri', ''))
-                
-                # タイトルの抽出
-                title = ""
-                if hasattr(document, 'derived_struct_data') and document.derived_struct_data:
-                    derived_data = dict(document.derived_struct_data)
-                    title = derived_data.get('title', derived_data.get('htmlTitle', ''))
-                
-                if not title and hasattr(document, 'struct_data') and document.struct_data:
-                    struct_data = dict(document.struct_data)
-                    title = struct_data.get('title', '')
-                
-                result_item = {
-                    "document_id": document.id,
-                    "title": title if title else "タイトル未取得",
-                    "uri": uri,
-                    "snippet": " | ".join(snippets) if snippets else "スニペット未生成",
-                    "content": content,
-                    "relevance_score": getattr(result, 'relevance_score', 0),
-                    "metadata": {
-                        "category": "",
-                        "date": "",
-                        "source": uri,
-                        "snippet_count": len(snippets)
-                    }
-                }
-                results.append(result_item)
+            # Answer APIの結果を処理
+            answer_text = ""
+            search_results = []
+            citations = []
             
-            # 検索サマリーの取得
-            summary_text = ""
-            if hasattr(response, 'summary') and response.summary:
-                summary_text = response.summary.summary_text
+            if hasattr(response, 'answer') and response.answer:
+                answer_text = response.answer.answer_text
+                
+                # ステップ情報から検索結果を抽出
+                if hasattr(response.answer, 'steps'):
+                    for step in response.answer.steps:
+                        if hasattr(step, 'actions'):
+                            for action in step.actions:
+                                if hasattr(action, 'observation') and hasattr(action.observation, 'search_results'):
+                                    for search_result in action.observation.search_results:
+                                        result_item = {
+                                            "document_id": getattr(search_result, 'document', ''),
+                                            "title": getattr(search_result, 'title', ''),
+                                            "uri": getattr(search_result, 'uri', ''),
+                                            "snippet": getattr(search_result, 'snippet', ''),
+                                            "content": "",  # Answer APIでは詳細コンテンツは通常含まれない
+                                            "relevance_score": 0,
+                                            "metadata": {
+                                                "category": "",
+                                                "date": "",
+                                                "source": getattr(search_result, 'uri', '')
+                                    
+    def is_available(self) -> bool:
+                                        }
+                                        search_results.append(result_item)
+                
+                # 引用情報を抽出
+                if hasattr(response.answer, 'citations'):
+                    for citation in response.answer.citations:
+                        citations.append({
+                            "start_index": getattr(citation, 'start_index', 0),
+                            "end_index": getattr(citation, 'end_index', 0),
+                            "sources": [source.reference_id for source in getattr(citation, 'sources', [])]
+                        })
             
-            logger.info(f"Vertex AI Search 検索完了: {len(results)}件の結果")
+            logger.info(f"Vertex AI Search Answer API 完了: 回答長={len(answer_text)}, 検索結果={len(search_results)}件")
             
             return {
                 "search_successful": True,
-                "results": results,
-                "total_size": getattr(response, 'total_size', len(results)),
-                "query": query,  # ← ここを修正: query_text → query
+                "results": search_results,
+                "total_size": len(search_results),
+                "query": query_text,
                 "address": address,
-                "summary": summary_text,
+                "summary": answer_text,  # Answer APIからの生成回答をサマリーとして使用
+                "answer_text": answer_text,  # Answer API固有のフィールド
+                "citations": citations,
                 "search_metadata": {
-                    "data_store_id": self.data_store_id,  # ← settings経由での参照を修正
-                    "location": self.location,           # ← settings経由での参照を修正
-                    "results_count": len(results)
+                    "data_store_id": self.data_store_id,
+                    "location": self.location,
+                    "results_count": len(search_results),
+                    "api_type": "answer"
                 }
             }
             
         except Exception as e:
-            logger.error(f"Vertex AI Search 検索エラー: {e}")
-            return {
-                "search_successful": False,
-                "results": [],
-                "error": str(e),
-                "query": f"{address}の財務状況について、良い悪いと根拠を含めて教えてください",
-                "address": address
-            }
+            logger.error(f"Vertex AI Search Answer API エラー: {e}")
+            # エラーの場合は従来のSearch APIにフォールバック
+            logger.info("Answer APIに失敗したため、Search APIにフォールバック")
+            return self._search_financial_info_fallback(address, page_size)
     
     def search_general(self, query: str, page_size: int = 5) -> Dict[str, Any]:
         """
@@ -281,7 +241,72 @@ class VertexAISearchService:
                 "error": str(e)
             }
     
-    def is_available(self) -> bool:
+    def _search_financial_info_fallback(self, address: str, page_size: int = 5) -> Dict[str, Any]:
+        """
+        従来のSearch APIを使用したフォールバック検索
+        """
+        try:
+            query = f"{address}の財務状況について、良い悪いと根拠を含めて教えてください"
+            
+            request = discoveryengine.SearchRequest(
+                serving_config=self.serving_config_path,
+                query=query,
+                page_size=page_size,
+                content_search_spec=discoveryengine.SearchRequest.ContentSearchSpec(
+                    snippet_spec=discoveryengine.SearchRequest.ContentSearchSpec.SnippetSpec(
+                        return_snippet=True,
+                        max_snippet_count=3
+                    ),
+                    summary_spec=discoveryengine.SearchRequest.ContentSearchSpec.SummarySpec(
+                        summary_result_count=5,
+                        include_citations=True
+                    )
+                )
+            )
+            
+            response = self.client.search(request)
+            
+            results = []
+            for result in response.results:
+                result_item = {
+                    "document_id": result.document.id,
+                    "title": "タイトル未取得",
+                    "uri": "",
+                    "snippet": "スニペット未生成",
+                    "content": "",
+                    "relevance_score": 0,
+                    "metadata": {"category": "", "date": "", "source": ""}
+                }
+                results.append(result_item)
+            
+            summary_text = ""
+            if hasattr(response, 'summary') and response.summary:
+                summary_text = response.summary.summary_text
+            
+            return {
+                "search_successful": True,
+                "results": results,
+                "total_size": len(results),
+                "query": query,
+                "address": address,
+                "summary": summary_text,
+                "search_metadata": {
+                    "data_store_id": self.data_store_id,
+                    "location": self.location,
+                    "results_count": len(results),
+                    "api_type": "search_fallback"
+                }
+            }
+            
+        except Exception as e:
+            logger.error(f"フォールバック検索もエラー: {e}")
+            return {
+                "search_successful": False,
+                "results": [],
+                "error": str(e),
+                "query": f"{address}の財務状況について、良い悪いと根拠を含めて教えてください",
+                "address": address
+            }
         """
         Vertex AI Search サービスが利用可能かチェック
         
