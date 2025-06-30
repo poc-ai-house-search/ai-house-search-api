@@ -597,7 +597,7 @@ async def compress_text_only(request: TextCompressionRequest) -> Dict[str, Any]:
         logger.error(f"テキスト圧縮エラー: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.get(f"{settings.API_PREFIX}/storage/debug")
+@app.post(f"{settings.API_PREFIX}/compress-text")
 async def debug_gcs_storage():
     """GCS ストレージの詳細情報をデバッグ用に取得"""
     try:
@@ -1041,7 +1041,77 @@ async def config_debug():
         }
     }
 
-@app.post(f"{settings.API_PREFIX}/compress-text")
+@app.get(f"{settings.API_PREFIX}/reasoning-engine/debug")
+async def reasoning_engine_debug():
+    """Reasoning Engine サービスの詳細デバッグ情報を取得"""
+    try:
+        if not reasoning_engine_service:
+            return {
+                "service_enabled": getattr(settings, 'ENABLE_VERTEX_AI_SEARCH', False),
+                "service_available": False,
+                "error": "Reasoning Engine サービスが初期化されていません"
+            }
+        
+        debug_info = reasoning_engine_service.get_debug_info()
+        
+        # 利用可能なメソッドを確認するテスト
+        try:
+            # list_sessionsメソッドをテスト
+            url = f"{reasoning_engine_service.base_url}:list_sessions"
+            headers = {
+                "Authorization": f"Bearer {reasoning_engine_service._get_access_token()}",
+                "Content-Type": "application/json"
+            }
+            
+            response = requests.get(url, headers=headers, timeout=10)
+            debug_info["list_sessions_test"] = {
+                "status_code": response.status_code,
+                "response": response.text[:500]  # 最初の500文字のみ
+            }
+            
+        except Exception as test_error:
+            debug_info["list_sessions_test"] = {
+                "error": str(test_error)
+            }
+        
+        return debug_info
+        
+    except Exception as e:
+        logger.error(f"Reasoning Engine デバッグ情報取得エラー: {e}")
+        return {
+            "error": str(e),
+            "error_type": type(e).__name__
+        }
+
+@app.post(f"{settings.API_PREFIX}/reasoning-engine/test-session")
+async def test_reasoning_engine_session():
+    """Reasoning Engine のセッション機能をテスト"""
+    try:
+        if not reasoning_engine_service:
+            raise HTTPException(status_code=503, detail="Reasoning Engine サービスが利用できません")
+        
+        # セッション作成テスト
+        session_id = reasoning_engine_service.create_session()
+        
+        result = {
+            "session_creation": "success",
+            "session_id": session_id,
+            "cleanup": "pending"
+        }
+        
+        # セッション削除テスト
+        if reasoning_engine_service.delete_session(session_id):
+            result["cleanup"] = "success"
+        else:
+            result["cleanup"] = "failed"
+        
+        return result
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Reasoning Engine セッションテストエラー: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 async def vertex_ai_search_debug():
     """Vertex AI Search サービスの詳細デバッグ情報を取得"""
     try:

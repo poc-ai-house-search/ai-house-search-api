@@ -32,12 +32,15 @@ class ReasoningEngineService:
             # Google Cloud認証の設定
             self.credentials, self.project = default()
             
-            # エンドポイントURL
-            self.endpoint_url = (
+            # エンドポイントURL（セッション管理用）
+            self.base_url = (
                 f"https://{self.location}-aiplatform.googleapis.com/v1/"
                 f"projects/{self.project_id}/locations/{self.location}/"
-                f"reasoningEngines/{self.reasoning_engine_id}:query"
+                f"reasoningEngines/{self.reasoning_engine_id}"
             )
+            
+            # 現在のセッション管理
+            self.current_session_id = None
             
             logger.info(f"Reasoning Engine サービス初期化完了")
             logger.info(f"プロジェクトID: {self.project_id}")
@@ -58,9 +61,153 @@ class ReasoningEngineService:
             logger.error(f"アクセストークン取得エラー: {e}")
             raise
     
+    def create_session(self) -> str:
+        """
+        新しいセッションを作成
+        
+        Returns:
+            str: セッションID
+        """
+        try:
+            url = f"{self.base_url}:create_session"
+            headers = {
+                "Authorization": f"Bearer {self._get_access_token()}",
+                "Content-Type": "application/json"
+            }
+            
+            # セッション作成のペイロード
+            payload = {}
+            
+            response = requests.post(url, headers=headers, json=payload, timeout=30)
+            
+            if response.status_code == 200:
+                result = response.json()
+                session_id = result.get("session_id")
+                if session_id:
+                    self.current_session_id = session_id
+                    logger.info(f"セッション作成成功: {session_id}")
+                    return session_id
+                else:
+                    raise Exception("セッションIDが返されませんでした")
+            else:
+                raise Exception(f"セッション作成失敗: {response.status_code} - {response.text}")
+                
+        except Exception as e:
+            logger.error(f"セッション作成エラー: {e}")
+            raise
+    
+    def query_session(self, session_id: str, query: str) -> Dict[str, Any]:
+        """
+        セッションに対してクエリを実行
+        
+        Args:
+            session_id: セッションID
+            query: クエリ文字列
+            
+        Returns:
+            Dict[str, Any]: クエリ結果
+        """
+        try:
+            # セッション固有のエンドポイント（推測）
+            # 実際のエンドポイントはドキュメントを確認する必要があります
+            url = f"{self.base_url}/sessions/{session_id}:query"
+            
+            headers = {
+                "Authorization": f"Bearer {self._get_access_token()}",
+                "Content-Type": "application/json"
+            }
+            
+            payload = {
+                "input": query
+            }
+            
+            response = requests.post(url, headers=headers, json=payload, timeout=30)
+            
+            if response.status_code == 200:
+                return response.json()
+            else:
+                raise Exception(f"クエリ実行失敗: {response.status_code} - {response.text}")
+                
+        except Exception as e:
+            logger.error(f"セッションクエリエラー: {e}")
+            raise
+    
+    def delete_session(self, session_id: str) -> bool:
+        """
+        セッションを削除
+        
+        Args:
+            session_id: セッションID
+            
+        Returns:
+            bool: 削除成功の場合True
+        """
+        try:
+            url = f"{self.base_url}/sessions/{session_id}:delete_session"
+            headers = {
+                "Authorization": f"Bearer {self._get_access_token()}",
+                "Content-Type": "application/json"
+            }
+            
+            response = requests.post(url, headers=headers, timeout=30)
+            
+            if response.status_code == 200:
+                logger.info(f"セッション削除成功: {session_id}")
+                if self.current_session_id == session_id:
+                    self.current_session_id = None
+                return True
+            else:
+                logger.error(f"セッション削除失敗: {response.status_code} - {response.text}")
+                return False
+                
+        except Exception as e:
+            logger.error(f"セッション削除エラー: {e}")
+            return False
     def analyze_flood_risk(self, address: str) -> Dict[str, Any]:
         """
-        指定された住所の浸水リスクを分析
+        指定された住所の浸水リスクを分析（セッションベース）
+        
+        Args:
+            address (str): 分析対象の住所
+            
+        Returns:
+            Dict[str, Any]: 浸水リスク分析結果
+        """
+        session_id = None
+        try:
+            query = f"{address}の浸水リスクを教えて"
+            logger.info(f"浸水リスク分析開始: {query}")
+            
+            # セッションを作成
+            session_id = self.create_session()
+            
+            # セッションに対してクエリを実行
+            result = self.query_session(session_id, query)
+            
+            logger.info(f"浸水リスク分析完了: {address}")
+            
+            # レスポンスを解析して構造化
+            return self._parse_flood_risk_response(result, address, query)
+            
+        except Exception as e:
+            logger.error(f"浸水リスク分析エラー: {e}")
+            return {
+                "analysis_successful": False,
+                "error": str(e),
+                "address": address,
+                "query": f"{address}の浸水リスクを教えて"
+            }
+        finally:
+            # セッションをクリーンアップ
+            if session_id:
+                try:
+                    self.delete_session(session_id)
+                except Exception as cleanup_error:
+                    logger.warning(f"セッションクリーンアップエラー: {cleanup_error}")
+    
+    def analyze_flood_risk_direct(self, address: str) -> Dict[str, Any]:
+        """
+        直接的なReasoning Engine呼び出し（別のアプローチ）
         
         Args:
             address (str): 分析対象の住所
@@ -70,47 +217,39 @@ class ReasoningEngineService:
         """
         try:
             query = f"{address}の浸水リスクを教えて"
-            logger.info(f"浸水リスク分析開始: {query}")
+            logger.info(f"浸水リスク分析開始（直接呼び出し）: {query}")
             
-            # リクエストペイロード
-            payload = {
-                "class_method": "query",
-                "input": {
-                    "input": query
-                }
-            }
+            # 直接的なReasoning Engine API呼び出し
+            url = f"{self.base_url}:predict"  # または適切なエンドポイント
             
-            # ヘッダー
             headers = {
                 "Authorization": f"Bearer {self._get_access_token()}",
                 "Content-Type": "application/json"
             }
             
-            # APIリクエスト実行
-            response = requests.post(
-                self.endpoint_url,
-                headers=headers,
-                json=payload,
-                timeout=30
-            )
+            payload = {
+                "instances": [{"input": query}],
+                "parameters": {}
+            }
+            
+            response = requests.post(url, headers=headers, json=payload, timeout=30)
             
             if response.status_code == 200:
                 result = response.json()
-                logger.info(f"浸水リスク分析完了: {address}")
-                
-                # レスポンスを解析して構造化
+                logger.info(f"浸水リスク分析完了（直接呼び出し）: {address}")
                 return self._parse_flood_risk_response(result, address, query)
             else:
-                logger.error(f"Reasoning Engine API エラー: {response.status_code} - {response.text}")
+                logger.error(f"直接呼び出しAPI エラー: {response.status_code} - {response.text}")
                 return {
                     "analysis_successful": False,
                     "error": f"API エラー: {response.status_code}",
                     "address": address,
-                    "query": query
+                    "query": query,
+                    "response_text": response.text
                 }
                 
         except Exception as e:
-            logger.error(f"浸水リスク分析エラー: {e}")
+            logger.error(f"直接呼び出し浸水リスク分析エラー: {e}")
             return {
                 "analysis_successful": False,
                 "error": str(e),
@@ -253,9 +392,15 @@ class ReasoningEngineService:
             bool: 利用可能な場合True
         """
         try:
-            # 簡単なテストクエリ
-            test_result = self.analyze_flood_risk("東京都港区")
-            return test_result.get("analysis_successful", False)
+            # セッション一覧取得でテスト
+            url = f"{self.base_url}:list_sessions"
+            headers = {
+                "Authorization": f"Bearer {self._get_access_token()}",
+                "Content-Type": "application/json"
+            }
+            
+            response = requests.get(url, headers=headers, timeout=10)
+            return response.status_code == 200
             
         except Exception as e:
             logger.error(f"Reasoning Engine 接続テスト失敗: {e}")
@@ -272,6 +417,7 @@ class ReasoningEngineService:
             "project_id": self.project_id,
             "location": self.location,
             "reasoning_engine_id": self.reasoning_engine_id,
-            "endpoint_url": self.endpoint_url,
-            "credentials_valid": self.credentials.valid if self.credentials else False
+            "base_url": self.base_url,
+            "credentials_valid": self.credentials.valid if self.credentials else False,
+            "current_session_id": self.current_session_id
         }
