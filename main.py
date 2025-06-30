@@ -7,6 +7,7 @@ from services.scraping_service import ScrapingService
 from services.gemini_service import GeminiService
 from services.gcs_service import GCSService
 from services.vertex_ai_search_service import VertexAISearchService
+from services.reasoning_engine_service import ReasoningEngineService
 from config.settings import settings
 import logging
 import os
@@ -24,6 +25,7 @@ scraping_service = None
 gemini_service = None
 gcs_service = None
 vertex_ai_search_service = None
+reasoning_engine_service = None
 
 class TextCompressionRequest(BaseModel):
     """テキスト圧縮リクエストモデル"""
@@ -34,7 +36,7 @@ class TextCompressionRequest(BaseModel):
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """アプリケーションのライフサイクル管理"""
-    global scraping_service, gemini_service, gcs_service, vertex_ai_search_service
+    global scraping_service, gemini_service, gcs_service, vertex_ai_search_service, reasoning_engine_service
     
     # 起動時
     try:
@@ -78,6 +80,22 @@ async def lifespan(app: FastAPI):
         else:
             logger.info("Vertex AI Search は無効化されています")
             vertex_ai_search_service = None
+        
+        # Reasoning Engine サービスの初期化（オプション、エラーでも続行）
+        if getattr(settings, 'ENABLE_VERTEX_AI_SEARCH', os.environ.get("ENABLE_VERTEX_AI_SEARCH", "false").lower() == "true"):
+            try:
+                reasoning_engine_service = ReasoningEngineService()
+                if reasoning_engine_service.is_available():
+                    logger.info("Reasoning Engine サービス初期化完了")
+                else:
+                    logger.warning("Reasoning Engine サービス接続テストに失敗")
+                    reasoning_engine_service = None
+            except Exception as e:
+                logger.warning(f"Reasoning Engine サービス初期化に失敗（無効化されます）: {e}")
+                reasoning_engine_service = None
+        else:
+            logger.info("Reasoning Engine は無効化されています")
+            reasoning_engine_service = None
             
         logger.info("全サービス初期化完了")
         yield
@@ -199,9 +217,10 @@ async def analyze_property(request: QueryRequest):
             # 物件名の場合：直接Gemini分析
             analysis = gemini_service.analyze_property_by_name(query, request.response_format)
         
-        # 住所を抽出してVertex AI Searchで財務分析を実行
+        # 住所を抽出してVertex AI Searchで財務分析 + Reasoning Engineで浸水リスク分析を実行
         financial_analysis = None
         vertex_search_results = None
+        flood_risk_analysis = None
         
         if vertex_ai_search_service and analysis and isinstance(analysis, dict):
             try:
@@ -217,10 +236,30 @@ async def analyze_property(request: QueryRequest):
                     address = analysis["location"]
                 
                 if address and isinstance(address, str) and len(address.strip()) > 0:
-                    logger.info(f"住所を検出、財務分析開始: {address}")
+                    logger.info(f"住所を検出、財務分析・浸水リスク分析開始: {address}")
                     
                     # Vertex AI Searchで財務情報を検索
                     vertex_search_results = vertex_ai_search_service.search_financial_info(address)
+                    
+                    # Reasoning Engineで浸水リスク分析を実行
+                    if reasoning_engine_service:
+                        try:
+                            flood_risk_analysis = reasoning_engine_service.analyze_flood_risk(address)
+                            logger.info(f"浸水リスク分析完了: リスクレベル={flood_risk_analysis.get('flood_risk_assessment', {}).get('overall_risk_level', '不明')}")
+                        except Exception as e:
+                            logger.error(f"浸水リスク分析でエラー: {e}")
+                            flood_risk_analysis = {
+                                "analysis_successful": False,
+                                "error": str(e),
+                                "address": address
+                            }
+                    else:
+                        logger.info("Reasoning Engine サービスが利用できないため、浸水リスク分析をスキップ")
+                        flood_risk_analysis = {
+                            "analysis_successful": False,
+                            "reason": "Reasoning Engine サービスが無効化されています",
+                            "address": address
+                        }
                     
                     # Geminiで財務分析を実行
                     financial_analysis = gemini_service.analyze_financial_status(address, vertex_search_results)
@@ -275,8 +314,9 @@ async def analyze_property(request: QueryRequest):
                             "json_structured": bool(vertex_structured_data and vertex_structured_data.get("positive_factors"))
                         }
                     
-                    # analysisに財務分析結果を追加
+                    # analysisに財務分析結果と浸水リスク分析結果を追加
                     analysis["financial_analysis"] = financial_analysis
+                    analysis["flood_risk_analysis"] = flood_risk_analysis
                     analysis["vertex_search_info"] = {
                         "search_executed": True,
                         "search_successful": vertex_search_results.get("search_successful", False),
@@ -284,6 +324,12 @@ async def analyze_property(request: QueryRequest):
                         "address_used": address,
                         "has_summary": bool(vertex_summary),
                         "has_structured_data": bool(vertex_structured_data and vertex_structured_data.get("positive_factors"))
+                    }
+                    analysis["reasoning_engine_info"] = {
+                        "analysis_executed": reasoning_engine_service is not None,
+                        "analysis_successful": flood_risk_analysis.get("analysis_successful", False) if flood_risk_analysis else False,
+                        "risk_level": flood_risk_analysis.get("flood_risk_assessment", {}).get("overall_risk_level", "不明") if flood_risk_analysis else "不明",
+                        "address_used": address
                     }
                     
                     logger.info(f"財務分析完了: {financial_analysis.get('financial_status', 'Unknown')}")
@@ -293,6 +339,11 @@ async def analyze_property(request: QueryRequest):
                         "status": "skipped",
                         "reason": "住所が検出されませんでした",
                         "analysis_summary": "住所情報が不足しているため、財務状況の分析を実行できませんでした。"
+                    }
+                    analysis["flood_risk_analysis"] = {
+                        "analysis_successful": False,
+                        "reason": "住所が検出されませんでした",
+                        "address": "不明"
                     }
                     analysis["vertex_search_info"] = {
                         "search_executed": False,
@@ -305,6 +356,11 @@ async def analyze_property(request: QueryRequest):
                     "status": "error",
                     "error": str(e),
                     "analysis_summary": f"財務分析中にエラーが発生しました: {str(e)}"
+                }
+                analysis["flood_risk_analysis"] = {
+                    "analysis_successful": False,
+                    "error": str(e),
+                    "address": address if 'address' in locals() else "不明"
                 }
                 analysis["vertex_search_info"] = {
                     "search_executed": False,
