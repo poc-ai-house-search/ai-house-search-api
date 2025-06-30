@@ -508,7 +508,59 @@ async def vertex_ai_search_status():
             "error": str(e)
         }
 
-@app.post(f"{settings.API_PREFIX}/compress-text")
+@app.post(f"{settings.API_PREFIX}/flood-risk-analysis")
+async def analyze_flood_risk_only(address: str):
+    """住所の浸水リスクのみを分析するエンドポイント"""
+    try:
+        if not reasoning_engine_service:
+            raise HTTPException(status_code=503, detail="Reasoning Engine サービスが利用できません")
+        
+        # Reasoning Engineで浸水リスク分析を実行
+        result = reasoning_engine_service.analyze_flood_risk(address)
+        
+        return {
+            "address": address,
+            "flood_risk_analysis": result,
+            "analysis_timestamp": None
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"浸水リスク分析エラー: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get(f"{settings.API_PREFIX}/reasoning-engine/status")
+async def reasoning_engine_status():
+    """Reasoning Engine サービスのステータスを確認"""
+    try:
+        if not reasoning_engine_service:
+            return {
+                "service_enabled": getattr(settings, 'ENABLE_VERTEX_AI_SEARCH', False),
+                "service_available": False,
+                "status": "disabled",
+                "message": "Reasoning Engine サービスが無効化されています"
+            }
+        
+        is_available = reasoning_engine_service.is_available()
+        
+        return {
+            "service_enabled": True,
+            "service_available": is_available,
+            "status": "healthy" if is_available else "unhealthy",
+            "reasoning_engine_id": reasoning_engine_service.reasoning_engine_id,
+            "project_id": reasoning_engine_service.project_id,
+            "location": reasoning_engine_service.location
+        }
+        
+    except Exception as e:
+        logger.error(f"Reasoning Engine ステータス確認エラー: {e}")
+        return {
+            "service_enabled": getattr(settings, 'ENABLE_VERTEX_AI_SEARCH', False),
+            "service_available": False,
+            "status": "error",
+            "error": str(e)
+        }
 async def compress_text_only(request: TextCompressionRequest) -> Dict[str, Any]:
     """テキスト圧縮のみを行うエンドポイント"""
     try:
@@ -989,7 +1041,7 @@ async def config_debug():
         }
     }
 
-@app.get(f"{settings.API_PREFIX}/vertex-search/debug")
+@app.post(f"{settings.API_PREFIX}/compress-text")
 async def vertex_ai_search_debug():
     """Vertex AI Search サービスの詳細デバッグ情報を取得"""
     try:
