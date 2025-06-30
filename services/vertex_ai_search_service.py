@@ -362,7 +362,7 @@ class VertexAISearchService:
                 "search_successful": False,
                 "results": [],
                 "error": str(e),
-                "query": f"{address}の財務状況について、良い悪いと根拠を含めて教えてください",
+                "query": f"{address}の近隣の治安、行政、近くの病院、子育てに関する情報について教えてください。",
                 "address": address
             }
     
