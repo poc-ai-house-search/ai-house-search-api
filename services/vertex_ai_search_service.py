@@ -57,7 +57,7 @@ class VertexAISearchService:
         """
         try:
             # 検索クエリを構築（財務状況に特化）
-            query_text = f"{address}の財務状況について、良い悪いと根拠を含めて教えてください"
+            query_text = f"{address}の近隣の治安、行政、近くの病院、子育てに関する情報について教えてください。"
             
             logger.info(f"Vertex AI Search Answer API実行: {query_text}")
             logger.info(f"サービング設定パス: {self.serving_config_path}")
@@ -304,7 +304,7 @@ class VertexAISearchService:
         従来のSearch APIを使用したフォールバック検索
         """
         try:
-            query = f"{address}の財務状況について、良い悪いと根拠を含めて教えてください"
+            query = f"{address}の近隣の治安、行政、近くの病院、子育てに関する情報について教えてください。"
             
             request = discoveryengine.SearchRequest(
                 serving_config=self.serving_config_path,
